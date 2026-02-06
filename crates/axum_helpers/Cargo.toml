@@ -1,0 +1,14 @@
+[package]
+name = "axum_helpers"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+error_set = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sql_traits = { workspace = true }
+sqlx = { workspace = true }

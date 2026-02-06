@@ -1,0 +1,8 @@
+[package]
+name = "sql_traits"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = { workspace = true }
+sqlx = { workspace = true }
