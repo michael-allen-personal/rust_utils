@@ -84,20 +84,20 @@ pub fn derive_primary_key(input: TokenStream) -> TokenStream {
 }
 
 /// Derive `DeleteRoute` (requires the type to implement DeleteSQL + HasPrimaryKey).
-/// This macro just emits `impl common_api::DeleteRoute for Type {}`.
+/// This macro just emits `impl axum_helpers::DeleteRoute for Type {}`.
 #[proc_macro_derive(DeleteRoute)]
 pub fn derive_delete_route(input: TokenStream) -> TokenStream {
     let input: DeriveInput = parse_macro_input!(input);
     let name = &input.ident;
 
     let expanded = quote! {
-        impl common_api::DeleteRoute for #name {}
+        impl axum_helpers::DeleteRoute for #name {}
     };
 
     TokenStream::from(expanded)
 }
 
-/// Derive `CreateRoute` similarly: `impl common_api::CreateRoute<'de> for Type {}`
+/// Derive `CreateRoute` similarly: `impl axum_helpers::CreateRoute<'de> for Type {}`
 /// We use a named lifetime `'de` because your trait has one.
 #[proc_macro_derive(CreateRoute)]
 pub fn derive_create_route(input: TokenStream) -> TokenStream {
@@ -107,13 +107,13 @@ pub fn derive_create_route(input: TokenStream) -> TokenStream {
     // Note: we don't need to mention T: Deserialize<'de> here; your trait bound
     // enforces it at use sites. If you want a nicer error, you can add a where clause.
     let expanded = quote! {
-        impl<'de> common_api::CreateRoute<'de> for #name {}
+        impl<'de> axum_helpers::CreateRoute<'de> for #name {}
     };
 
     TokenStream::from(expanded)
 }
 
-/// Derive `BulkCreateRoute` similarly: `impl common_api::BulkCreateRoute<'de> for Type {}`
+/// Derive `BulkCreateRoute` similarly: `impl axum_helpers::BulkCreateRoute<'de> for Type {}`
 /// We use a named lifetime `'de` because your trait has one.
 #[proc_macro_derive(BulkCreateRoute)]
 pub fn derive_bulk_create_route(input: TokenStream) -> TokenStream {
@@ -123,40 +123,51 @@ pub fn derive_bulk_create_route(input: TokenStream) -> TokenStream {
     // Note: we don't need to mention T: Deserialize<'de> here; your trait bound
     // enforces it at use sites. If you want a nicer error, you can add a where clause.
     let expanded = quote! {
-        impl<'de> common_api::BulkCreateRoute<'de> for #name {}
+        impl<'de> axum_helpers::BulkCreateRoute<'de> for #name {}
     };
 
     TokenStream::from(expanded)
 }
 
-/// Derive `GetLatestRoute` similarly: `impl common_api::GetLatestRoute for Type {}`
+/// Derive `GetLatestRoute` similarly: `impl axum_helpers::GetLatestRoute for Type {}`
 #[proc_macro_derive(GetLatestRoute)]
 pub fn derive_get_latest_route(input: TokenStream) -> TokenStream {
     let input: DeriveInput = parse_macro_input!(input);
     let name = &input.ident;
 
     let expanded = quote! {
-        impl common_api::GetLatestRoute for #name {}
+        impl axum_helpers::GetLatestRoute for #name {}
     };
 
     TokenStream::from(expanded)
 }
 
-/// Derive `BasicCrudRoutes` similarly:
-/// `impl common_api::GetLatestRoute for Type {}`
-/// `impl<'de> common_api::CreateRoute<'de> for Type {}`
-/// `impl<'de> common_api::BulkCreateRoute<'de> for Type {}`
-/// `impl common_api::DeleteRoute for Type {}`
+/// Derive `ListRecordsRoute`: `impl axum_helpers::ListRecordsRoute for Type {}`
+#[proc_macro_derive(ListRecordsRoute)]
+pub fn derive_list_records_route(input: TokenStream) -> TokenStream {
+    let input: DeriveInput = parse_macro_input!(input);
+    let name = &input.ident;
+
+    let expanded = quote! {
+        impl axum_helpers::ListRecordsRoute for #name {}
+    };
+
+    TokenStream::from(expanded)
+}
+
+/// Derive `BasicCrudRoutes` — implements all route traits for a type:
+/// `GetLatestRoute`, `ListRecordsRoute`, `CreateRoute`, `BulkCreateRoute`, `DeleteRoute`
 #[proc_macro_derive(BasicCrudRoutes)]
 pub fn derive_basic_crud_routes(input: TokenStream) -> TokenStream {
     let input: DeriveInput = parse_macro_input!(input);
     let name = &input.ident;
 
     let expanded = quote! {
-        impl common_api::GetLatestRoute for #name {}
-        impl<'de> common_api::CreateRoute<'de> for #name {}
-        impl<'de> common_api::BulkCreateRoute<'de> for #name {}
-        impl common_api::DeleteRoute for #name {}
+        impl axum_helpers::GetLatestRoute for #name {}
+        impl axum_helpers::ListRecordsRoute for #name {}
+        impl<'de> axum_helpers::CreateRoute<'de> for #name {}
+        impl<'de> axum_helpers::BulkCreateRoute<'de> for #name {}
+        impl axum_helpers::DeleteRoute for #name {}
     };
 
     TokenStream::from(expanded)
