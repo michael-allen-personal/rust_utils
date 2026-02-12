@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.0
+
+### Changed
+
+- `CreateRoute` trait now returns the created object in the response instead of an empty body
+
 ## v0.2.0
 
 ### Added

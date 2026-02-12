@@ -43,8 +43,13 @@ pub trait ListRecordsRoute: ListRecords + serde::Serialize {
 }
 
 /// Axum route handler for creating a single record from a JSON request body.
+///
+/// Returns `201 Created` with the created record as JSON.
 #[async_trait]
-pub trait CreateRoute<'de>: InsertSQL + serde::Deserialize<'de> {
+pub trait CreateRoute<'de>: InsertSQL + serde::Deserialize<'de>
+where
+    <Self as InsertSQL>::ReturnType: serde::Serialize,
+{
     // TODO: Add a function for logging
     async fn create_route(
         State(pool): State<PgPool>,
@@ -53,7 +58,7 @@ pub trait CreateRoute<'de>: InsertSQL + serde::Deserialize<'de> {
         obj.insert_sql(&pool)
             .await
             .map_err(ApiError::from)
-            .map(|_| StatusCode::NO_CONTENT)
+            .map(|record| (StatusCode::CREATED, response::Json(record)).into_response())
             .into_response()
     }
 }
