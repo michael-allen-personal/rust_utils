@@ -44,7 +44,7 @@ pub trait ListRecordsRoute: ListRecords + serde::Serialize {
 
 /// Axum route handler for creating a single record from a JSON request body.
 ///
-/// Returns `201 Created` with the created record as JSON.
+/// Returns `201 Created` with the `InsertSQL::ReturnType` as JSON.
 #[async_trait]
 pub trait CreateRoute<'de>: InsertSQL + serde::Deserialize<'de>
 where
@@ -64,8 +64,13 @@ where
 }
 
 /// Axum route handler for creating multiple records from a JSON array request body.
+///
+/// Returns `201 Created` with the `BulkInsertSQL::ReturnType` as JSON.
 #[async_trait]
-pub trait BulkCreateRoute<'de>: BulkInsertSQL + serde::Deserialize<'de> {
+pub trait BulkCreateRoute<'de>: BulkInsertSQL + serde::Deserialize<'de>
+where
+    <Self as BulkInsertSQL>::ReturnType: serde::Serialize,
+{
     // TODO: Add a function for logging
     async fn bulk_create_route(
         State(pool): State<PgPool>,
@@ -74,7 +79,7 @@ pub trait BulkCreateRoute<'de>: BulkInsertSQL + serde::Deserialize<'de> {
         Self::bulk_insert_sql(&pool, &objs)
             .await
             .map_err(ApiError::from)
-            .map(|_| StatusCode::NO_CONTENT)
+            .map(|records| (StatusCode::CREATED, response::Json(records)).into_response())
             .into_response()
     }
 }

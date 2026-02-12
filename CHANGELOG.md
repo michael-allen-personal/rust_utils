@@ -1,10 +1,19 @@
 # Changelog
 
+## v0.4.0
+
+### Changed
+
+- `BulkInsertSQL` traits now have an associated `ReturnType` specified by the implementor
+- `BulkCreateRoute` trait now returns the associated `BulkInsertSQL::ReturnType` in the response instead of an empty body
+- `CreateRoute`, `BulkCreateRoute`, and `BasicCrudRoutes` derive macros now include `ReturnType: Serialize` where clauses
+- Cleaned up docstrings on `InsertSQL` and `BulkInsertSQL` traits
+
 ## v0.3.0
 
 ### Changed
 
-- `CreateRoute` trait now returns the created object in the response instead of an empty body
+- `CreateRoute` trait now returns the associated `InsertSQL::ReturnType` in the response instead of an empty body
 
 ## v0.2.0
 
