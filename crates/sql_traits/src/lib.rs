@@ -12,10 +12,25 @@ pub trait GetLatestRecord: Sized {
     async fn get_latest_record(pool: &PgPool) -> Result<Option<Self>, sqlx::Error>;
 }
 
+/// Fetches a single record of this type from the database matching the given filter.
+#[async_trait]
+pub trait GetRecord<T>: Sized
+where
+    T: Send,
+{
+    async fn get_record(pool: &PgPool, where_params: T) -> Result<Option<Self>, sqlx::Error>;
+}
+
 /// Retrieves all records of this type from the database.
 #[async_trait]
 pub trait ListRecords: Sized {
     async fn get_all(pool: &PgPool) -> Result<Vec<Self>, sqlx::Error>;
+}
+
+/// Retrieves all records of this type from the database matching the given filter.
+#[async_trait]
+pub trait ListRecordsWhere<T>: Sized {
+    async fn get_records(pool: &PgPool, where_params: T) -> Result<Vec<Self>, sqlx::Error>;
 }
 
 /// Inserts a single record into the database.

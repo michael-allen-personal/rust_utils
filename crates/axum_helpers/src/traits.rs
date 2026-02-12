@@ -7,7 +7,8 @@ use axum::{
 use sqlx::PgPool;
 
 use sql_traits::{
-    BulkInsertSQL, DeleteSQL, GetLatestRecord, HasPrimaryKey, InsertSQL, ListRecords,
+    BulkInsertSQL, DeleteSQL, GetLatestRecord, GetRecord, HasPrimaryKey, InsertSQL, ListRecords,
+    ListRecordsWhere,
 };
 
 use crate::ApiError;
@@ -28,6 +29,28 @@ pub trait GetLatestRoute: GetLatestRecord + serde::Serialize {
     }
 }
 
+/// Axum route handler for fetching a single record matching a filter extracted from the URL path.
+///
+/// Returns `200 OK` with the record as JSON, or `204 No Content` if none exists.
+#[async_trait]
+pub trait GetRoute<T: Send>: GetRecord<T> + serde::Serialize {
+    type PathParams: Into<T> + Send + 'static;
+    // TODO: Add a function for logging
+    async fn get_route(
+        State(pool): State<PgPool>,
+        Path(path_params): Path<Self::PathParams>,
+    ) -> Response {
+        let result = Self::get_record(&pool, path_params.into())
+            .await
+            .map_err(ApiError::from);
+        match result {
+            Ok(Some(record)) => (StatusCode::OK, response::Json(Some(record))).into_response(),
+            Ok(None) => StatusCode::NO_CONTENT.into_response(),
+            Err(api_error) => api_error.into_response(),
+        }
+    }
+}
+
 /// Axum route handler for listing all records.
 ///
 /// Returns `200 OK` with the records as a JSON array.
@@ -35,6 +58,24 @@ pub trait GetLatestRoute: GetLatestRecord + serde::Serialize {
 pub trait ListRecordsRoute: ListRecords + serde::Serialize {
     async fn list_records_route(State(pool): State<PgPool>) -> Response {
         Self::get_all(&pool)
+            .await
+            .map_err(ApiError::from)
+            .map(|records| (StatusCode::OK, response::Json(records)).into_response())
+            .into_response()
+    }
+}
+
+/// Axum route handler for listing records matching a filter extracted from the URL path.
+///
+/// Returns `200 OK` with the matching records as a JSON array.
+#[async_trait]
+pub trait ListRecordsWhereRoute<T: Send>: ListRecordsWhere<T> + serde::Serialize {
+    type PathParams: Into<T> + Send + 'static;
+    async fn list_records_where_route(
+        State(pool): State<PgPool>,
+        Path(path_params): Path<Self::PathParams>,
+    ) -> Response {
+        Self::get_records(&pool, path_params.into())
             .await
             .map_err(ApiError::from)
             .map(|records| (StatusCode::OK, response::Json(records)).into_response())
