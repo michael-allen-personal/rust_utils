@@ -4,8 +4,9 @@ use axum::{
 };
 use error_set::error_set;
 
-/// A convenience `Result` type that uses [`ApiError`] as the error variant.
-pub type Result<T> = std::result::Result<T, ApiError>;
+/// A convenience `Result` type whose error variant defaults to [`ApiError`] but can be
+/// overridden, e.g. `Result<T, sqlx::Error>`.
+pub type Result<T, E = ApiError> = std::result::Result<T, E>;
 
 error_set! {
     ApiError := {
