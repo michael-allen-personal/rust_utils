@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.5.0
+
+### Changed
+
+- `Result` type alias in `axum_helpers` now takes an optional error type parameter (`Result<T, E = ApiError>`), so both `Result<T>` and `Result<T, E>` resolve to one alias within the same file ([#1](https://github.com/michael-allen-personal/rust_utils/issues/1))
+
 ## v0.4.0
 
 ### Added
