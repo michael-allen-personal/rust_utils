@@ -75,7 +75,7 @@ pub fn derive_primary_key(input: TokenStream) -> TokenStream {
     };
 
     let expanded = quote! {
-        impl sql_traits::HasPrimaryKey for #name {
+        impl ::sql_traits::HasPrimaryKey for #name {
             type PrimaryKey = #pk_type_tokens;
         }
     };
@@ -91,7 +91,7 @@ pub fn derive_delete_route(input: TokenStream) -> TokenStream {
     let name = &input.ident;
 
     let expanded = quote! {
-        impl axum_helpers::DeleteRoute for #name {}
+        impl ::axum_helpers::DeleteRoute for #name {}
     };
 
     TokenStream::from(expanded)
@@ -107,9 +107,10 @@ pub fn derive_create_route(input: TokenStream) -> TokenStream {
     // Note: we don't need to mention T: Deserialize<'de> here; your trait bound
     // enforces it at use sites. If you want a nicer error, you can add a where clause.
     let expanded = quote! {
-        impl<'de> axum_helpers::CreateRoute<'de> for #name
+        impl<'de> ::axum_helpers::CreateRoute<'de> for #name
         where
-            <#name as sql_traits::InsertSQL>::ReturnType: serde::Serialize {}
+            <#name as ::axum_helpers::sql_traits::InsertSQL>::ReturnType:
+                ::axum_helpers::serde::Serialize {}
     };
 
     TokenStream::from(expanded)
@@ -125,9 +126,10 @@ pub fn derive_bulk_create_route(input: TokenStream) -> TokenStream {
     // Note: we don't need to mention T: Deserialize<'de> here; your trait bound
     // enforces it at use sites. If you want a nicer error, you can add a where clause.
     let expanded = quote! {
-        impl<'de> axum_helpers::BulkCreateRoute<'de> for #name
+        impl<'de> ::axum_helpers::BulkCreateRoute<'de> for #name
         where
-            <#name as sql_traits::BulkInsertSQL>::ReturnType: serde::Serialize {}
+            <#name as ::axum_helpers::sql_traits::BulkInsertSQL>::ReturnType:
+                ::axum_helpers::serde::Serialize {}
     };
 
     TokenStream::from(expanded)
@@ -140,7 +142,7 @@ pub fn derive_get_latest_route(input: TokenStream) -> TokenStream {
     let name = &input.ident;
 
     let expanded = quote! {
-        impl axum_helpers::GetLatestRoute for #name {}
+        impl ::axum_helpers::GetLatestRoute for #name {}
     };
 
     TokenStream::from(expanded)
@@ -153,7 +155,7 @@ pub fn derive_list_records_route(input: TokenStream) -> TokenStream {
     let name = &input.ident;
 
     let expanded = quote! {
-        impl axum_helpers::ListRecordsRoute for #name {}
+        impl ::axum_helpers::ListRecordsRoute for #name {}
     };
 
     TokenStream::from(expanded)
@@ -167,15 +169,17 @@ pub fn derive_basic_crud_routes(input: TokenStream) -> TokenStream {
     let name = &input.ident;
 
     let expanded = quote! {
-        impl axum_helpers::GetLatestRoute for #name {}
-        impl axum_helpers::ListRecordsRoute for #name {}
-        impl<'de> axum_helpers::CreateRoute<'de> for #name
+        impl ::axum_helpers::GetLatestRoute for #name {}
+        impl ::axum_helpers::ListRecordsRoute for #name {}
+        impl<'de> ::axum_helpers::CreateRoute<'de> for #name
         where
-            <#name as sql_traits::InsertSQL>::ReturnType: serde::Serialize {}
-        impl<'de> axum_helpers::BulkCreateRoute<'de> for #name
+            <#name as ::axum_helpers::sql_traits::InsertSQL>::ReturnType:
+                ::axum_helpers::serde::Serialize {}
+        impl<'de> ::axum_helpers::BulkCreateRoute<'de> for #name
         where
-            <#name as sql_traits::BulkInsertSQL>::ReturnType: serde::Serialize {}
-        impl axum_helpers::DeleteRoute for #name {}
+            <#name as ::axum_helpers::sql_traits::BulkInsertSQL>::ReturnType:
+                ::axum_helpers::serde::Serialize {}
+        impl ::axum_helpers::DeleteRoute for #name {}
     };
 
     TokenStream::from(expanded)

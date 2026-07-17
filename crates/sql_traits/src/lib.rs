@@ -1,5 +1,13 @@
-use async_trait::async_trait;
-use sqlx::PgPool;
+// Re-exported so downstream crates can use the exact same `sqlx` version these trait
+// signatures are built against. Depending on `sql_traits::sqlx` instead of a separately
+// declared `sqlx` guarantees a single compiled copy, avoiding "expected `Pool`, found
+// `Pool`" errors from two incompatible sqlx versions. `async_trait` is re-exported for
+// convenience, since implementing these traits requires the `#[async_trait]` attribute.
+pub use ::async_trait;
+pub use ::sqlx;
+
+use ::async_trait::async_trait;
+use ::sqlx::PgPool;
 
 /// Indicates that a type has a primary key, exposing it as an associated type.
 pub trait HasPrimaryKey {

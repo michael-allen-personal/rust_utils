@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.5.1
+
+### Added
+
+- `sql_traits` now re-exports `async_trait` and `sqlx`; `axum_helpers` now re-exports `async_trait`, `axum`, `serde`, `serde_json`, `sql_traits`, and `sqlx`. Downstream crates can depend on these through the re-exports to guarantee a single compiled copy of each, avoiding duplicate-crate type mismatches (e.g. two incompatible `sqlx::Pool` types)
+- Consumer-perspective compile tests for the derive macros in `sql_traits` and `axum_helpers`. Each test crate depends only on the crate under test plus `macros` — with no direct `serde`/`sqlx`/`sql_traits` dependency — so a successful build proves the generated code is self-contained
+
+### Changed
+
+- Derive macros now emit absolute paths routed through the re-exports (e.g. `::axum_helpers::sql_traits::InsertSQL`, `::axum_helpers::serde::Serialize`) instead of bare `sql_traits::`/`serde::` paths, so generated code resolves without the use site declaring those dependencies by name
+- Loosened workspace dependency requirements from exact patch pins (e.g. `0.1.89`) to minor-level constraints (e.g. `0.1`)
+
 ## v0.5.0
 
 ### Changed

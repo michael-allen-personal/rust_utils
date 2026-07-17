@@ -6,3 +6,9 @@ edition = "2024"
 [dependencies]
 async-trait = { workspace = true }
 sqlx = { workspace = true }
+
+[dev-dependencies]
+# Consumer-perspective compile tests for the derive macros. Deliberately the only
+# extra dependency the test crate has — proves the generated paths resolve without a
+# direct `serde`/`sqlx`/`sql_traits`-by-name dependency at the use site.
+macros = { path = "../macros" }

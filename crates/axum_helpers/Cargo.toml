@@ -12,3 +12,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sql_traits = { workspace = true }
 sqlx = { workspace = true }
+
+[dev-dependencies]
+# Consumer-perspective compile test for the route derive macros. `axum_helpers` (the
+# crate under test) and `macros` are the ONLY dependencies visible to the test crate —
+# no direct serde/sqlx/sql_traits — proving the derive output is self-contained.
+macros = { path = "../macros" }
