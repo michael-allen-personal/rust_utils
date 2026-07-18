@@ -184,17 +184,3 @@ pub fn derive_basic_crud_routes(input: TokenStream) -> TokenStream {
 
     TokenStream::from(expanded)
 }
-
-/// Derive `MaxVecCapacity` similarly:
-/// `impl common_parser::MaxVecCapacity for Type {}`
-#[proc_macro_derive(MaxVecCapacity)]
-pub fn max_vec_capacity_derive(input: TokenStream) -> TokenStream {
-    let input: DeriveInput = parse_macro_input!(input);
-    let name = &input.ident;
-
-    let impl_block = quote! {
-        impl common_parser::MaxVecCapacity for #name {}
-    };
-
-    TokenStream::from(impl_block)
-}

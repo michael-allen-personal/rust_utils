@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.0
+
+### Removed
+
+- `MaxVecCapacity` derive macro. It emitted an `impl common_parser::MaxVecCapacity` block referencing the `common_parser` crate, which is not a dependency anywhere in the workspace, so the derive could never compile for any consumer
+
 ## v0.5.1
 
 ### Added
