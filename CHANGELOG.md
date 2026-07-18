@@ -2,6 +2,10 @@
 
 ## v0.6.0
 
+### Changed
+
+- Bumped `sqlx` from `0.8` to `0.9`. This is a breaking change for downstream crates: `0.8` and `0.9` are not compatible and do not unify, so consumers must move to `sqlx` `0.9` (or depend on it through this crate's re-export)
+
 ### Removed
 
 - `MaxVecCapacity` derive macro. It emitted an `impl common_parser::MaxVecCapacity` block referencing the `common_parser` crate, which is not a dependency anywhere in the workspace, so the derive could never compile for any consumer
