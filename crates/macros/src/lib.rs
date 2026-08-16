@@ -204,6 +204,18 @@ pub fn derive_basic_crud_routes(input: TokenStream) -> TokenStream {
     expand_basic_crud_routes(input.into()).into()
 }
 
+/// Derive `MaxVecCapacity` — a marker impl opting a type into the trait's provided
+/// `estimate_max_vec_capacity_from_file`.
+///
+/// The emitted path is absolute and aimed at `generic_helpers`' root re-export; both are
+/// load-bearing, and `generic_helpers/CLAUDE.md` records why. That crate's
+/// `tests/derive_macros.rs` is the consumer-perspective compile test that fails if the
+/// path stops resolving from outside the crate.
+#[proc_macro_derive(MaxVecCapacity)]
+pub fn derive_max_vec_capacity(input: TokenStream) -> TokenStream {
+    expand_marker(input.into(), quote! { ::generic_helpers::MaxVecCapacity }).into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

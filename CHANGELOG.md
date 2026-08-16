@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `generic_helpers` crate, moved here from the `data-monorepo` repo (where it was
+  `common_parser`). Holds the `str_enum!` macro, `ParsingError`, and the
+  `buf_reader_from_path` / `MaxVecCapacity` file helpers. One dependency (`error_set`)
+- `MaxVecCapacity` derive macro, re-added now that the trait lives in this workspace.
+  It emits `impl ::generic_helpers::MaxVecCapacity for T {}` — an absolute path through
+  `generic_helpers`' root re-export, unlike the removed version's bare `common_parser::`
+  path. `generic_helpers/tests/derive_macros.rs` is a consumer-perspective compile test
+  that fails if the emitted path stops resolving from outside the crate
+- `str_enum!` generates `TryFrom<&str>` and `TryFrom<String>` alongside `FromStr`, so the
+  enums can be used from `#[serde(try_from = "String")]` and other `TryFrom`-bounded
+  positions that cannot reach `FromStr`. All three route through the same private
+  `accepts` matching, so aliases and case-insensitivity behave identically; the `String`
+  overload moves the input into the error on failure instead of allocating a second copy
+  of it
+
 ## v0.7.0
 
 ### Added

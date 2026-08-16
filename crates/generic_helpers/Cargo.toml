@@ -1,0 +1,14 @@
+[package]
+name = "generic_helpers"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+error_set = { workspace = true }
+
+[dev-dependencies]
+# Consumer-perspective compile tests for `str_enum!` and the `MaxVecCapacity` derive.
+# `macros` is deliberately the only extra dependency the test crates get — it is what
+# proves the derive's generated `::generic_helpers::MaxVecCapacity` path resolves at a
+# use site that names nothing else.
+macros = { path = "../macros" }

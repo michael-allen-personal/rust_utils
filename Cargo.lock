@@ -523,6 +523,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "generic_helpers"
+version = "0.1.0"
+dependencies = [
+ "error_set",
+ "macros",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
