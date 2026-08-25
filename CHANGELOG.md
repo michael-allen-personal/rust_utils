@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.7.0
+
+### Added
+
+- `sql_traits::GetRecord`: fetches a single record by its `HasPrimaryKey::PrimaryKey`, distinct from the filter-based lookup that is now `GetRecordWhere`
+- `axum_helpers::GetRecordRoute` and a matching `GetRecordRoute` derive: an axum handler that reads the primary key out of the URL path and returns the record
+- `#[derive(BasicCrudRoutes)]` now also emits `impl GetRecordRoute`
+- Unit tests for the derive expansion functions in `macros`, covering the `PrimaryKey` single/composite/error cases and the emitted route impls
+
+### Changed
+
+- **Breaking.** `sql_traits::GetRecord<T>` (filter-based) is renamed to `GetRecordWhere<T>` and its method `get_record` to `get_record_where`. The `GetRecord` name now means the primary-key lookup, so a stale `impl GetRecord<MyFilter>` fails on arity rather than silently binding to the new trait
+- **Breaking.** `axum_helpers::GetRoute<T>` is renamed to `GetRecordWhereRoute<T>` and its method `get_route` to `get_record_where_route`, matching the `<SqlTraitName>Route` convention. The `GetRoute` name is retired rather than reused, so existing call sites fail with "cannot find trait" instead of silently dispatching to the new primary-key handler
+- **Breaking.** `#[derive(BasicCrudRoutes)]` requires implementing types to also implement `GetRecord`, since `GetRecordRoute` takes it as a supertrait. Types deriving it today need a `GetRecord` impl added
+- **Breaking.** Route traits that extract from the URL path now require the extracted type to be `DeserializeOwned`: `GetRecordRoute` and `DeleteRoute` on `HasPrimaryKey::PrimaryKey`, `GetRecordWhereRoute` and `ListRecordsWhereRoute` on `PathParams`. Previously such a type could implement the trait and only fail when the handler was passed to `Router::route`, with an opaque `Handler` trait error that never mentioned `Deserialize`. No route that could actually be mounted before is affected. Generic code over these traits must restate the bound; concrete impls, including everything the derives emit, get it checked at the impl site
+- **Breaking.** `GetRecordRoute` and `GetRecordWhereRoute` return `404 Not Found` rather than `204 No Content` when no record matches, via the existing `ApiError::NotFoundError` path. `204` is a 2xx, so callers could not distinguish a missing record from a successful empty fetch. `GetLatestRoute` still returns `204`, where an empty table is not a missing resource
+- The route derive macros and `BasicCrudRoutes` are generated from shared emitters rather than duplicating each impl body, so the standalone derives and the bundle cannot drift
+- `proc_macro::TokenStream` now appears only in the `#[proc_macro_derive]` signatures; every expansion function takes and returns `proc_macro2::TokenStream`, which is what makes them unit-testable. `proc-macro2` is now a direct dependency of `macros` (it was already present transitively via `syn`/`quote`)
+- The fetch-one route handlers share one `optional_record_response` helper, making the not-found status a single decision instead of three copies
+
 ## v0.6.0
 
 ### Changed

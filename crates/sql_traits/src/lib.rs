@@ -20,13 +20,24 @@ pub trait GetLatestRecord: Sized {
     async fn get_latest_record(pool: &PgPool) -> Result<Option<Self>, sqlx::Error>;
 }
 
+/// Fetches the record of this type from the database with the given primary key value.
+///
+/// `HasPrimaryKey::PrimaryKey` is already declared `Send`, so no extra bound is needed here.
+#[async_trait]
+pub trait GetRecord: Sized + HasPrimaryKey {
+    async fn get_record(
+        pool: &PgPool,
+        primary_key: <Self as HasPrimaryKey>::PrimaryKey,
+    ) -> Result<Option<Self>, sqlx::Error>;
+}
+
 /// Fetches a single record of this type from the database matching the given filter.
 #[async_trait]
-pub trait GetRecord<T>: Sized
+pub trait GetRecordWhere<T>: Sized
 where
     T: Send,
 {
-    async fn get_record(pool: &PgPool, where_params: T) -> Result<Option<Self>, sqlx::Error>;
+    async fn get_record_where(pool: &PgPool, where_params: T) -> Result<Option<Self>, sqlx::Error>;
 }
 
 /// Retrieves all records of this type from the database.

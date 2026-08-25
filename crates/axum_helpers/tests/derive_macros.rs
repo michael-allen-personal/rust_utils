@@ -38,6 +38,16 @@ impl axum_helpers::sql_traits::GetLatestRecord for Widget {
 }
 
 #[async_trait]
+impl axum_helpers::sql_traits::GetRecord for Widget {
+    async fn get_record(
+        _pool: &PgPool,
+        _primary_key: <Self as axum_helpers::sql_traits::HasPrimaryKey>::PrimaryKey,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        Ok(None)
+    }
+}
+
+#[async_trait]
 impl axum_helpers::sql_traits::ListRecords for Widget {
     async fn get_all(_pool: &PgPool) -> Result<Vec<Self>, sqlx::Error> {
         Ok(Vec::new())
@@ -76,11 +86,17 @@ impl axum_helpers::sql_traits::DeleteSQL for Widget {
 
 // Concrete check for the route traits without lifetime parameters. The `CreateRoute`
 // and `BulkCreateRoute` impls are verified by the compiler through the derive above.
+// The `DeserializeOwned` bound is restated because a trait's `where` clause is not
+// elaborated into a generic caller's environment. Concrete impls (what the derive emits)
+// do not need this — they get the requirement checked at the impl site.
 fn assert_routes<T>()
 where
     T: axum_helpers::GetLatestRoute
+        + axum_helpers::GetRecordRoute
         + axum_helpers::ListRecordsRoute
         + axum_helpers::DeleteRoute,
+    <T as axum_helpers::sql_traits::HasPrimaryKey>::PrimaryKey:
+        axum_helpers::serde::de::DeserializeOwned,
 {
 }
 
