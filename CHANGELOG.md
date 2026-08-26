@@ -23,6 +23,10 @@
 - `proc_macro::TokenStream` now appears only in the `#[proc_macro_derive]` signatures; every expansion function takes and returns `proc_macro2::TokenStream`, which is what makes them unit-testable. `proc-macro2` is now a direct dependency of `macros` (it was already present transitively via `syn`/`quote`)
 - The fetch-one route handlers share one `optional_record_response` helper, making the not-found status a single decision instead of three copies
 
+### Removed
+
+- **Breaking.** `#[derive(BasicCrudRoutes)]` no longer emits `impl GetLatestRoute`. "The most recent row" is a domain-specific query rather than a CRUD operation, and bundling it forced every type deriving `BasicCrudRoutes` to implement `GetLatestRecord` whether or not it had a meaningful notion of "latest". The `GetLatestRoute` trait and its standalone derive are unchanged: types that want the handler add `#[derive(GetLatestRoute)]` alongside `BasicCrudRoutes`
+
 ## v0.6.0
 
 ### Changed
