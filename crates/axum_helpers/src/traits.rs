@@ -8,8 +8,8 @@ use serde::de::DeserializeOwned;
 use sqlx::PgPool;
 
 use sql_traits::{
-    BulkInsertSQL, DeleteSQL, GetLatestRecord, GetRecord, GetRecordWhere, HasPrimaryKey, InsertSQL,
-    ListRecords, ListRecordsWhere,
+    BulkInsertSQL, DeleteRecordsWhere, DeleteSQL, GetLatestRecord, GetRecord, GetRecordWhere,
+    HasPrimaryKey, InsertSQL, ListRecords, ListRecordsWhere,
 };
 
 use crate::ApiError;
@@ -101,6 +101,7 @@ pub trait GetRecordWhereRoute<T: Send>: GetRecordWhere<T> + serde::Serialize {
 /// Returns `200 OK` with the records as a JSON array.
 #[async_trait]
 pub trait ListRecordsRoute: ListRecords + serde::Serialize {
+    // TODO: Add a function for logging
     async fn list_records_route(State(pool): State<PgPool>) -> Response {
         Self::get_all(&pool)
             .await
@@ -116,6 +117,7 @@ pub trait ListRecordsRoute: ListRecords + serde::Serialize {
 #[async_trait]
 pub trait ListRecordsWhereRoute<T: Send>: ListRecordsWhere<T> + serde::Serialize {
     type PathParams: Into<T> + DeserializeOwned + Send + 'static;
+    // TODO: Add a function for logging
     async fn list_records_where_route(
         State(pool): State<PgPool>,
         Path(path_params): Path<Self::PathParams>,
@@ -192,6 +194,28 @@ where
             .await
             .map_err(ApiError::from)
             .map(|_| StatusCode::NO_CONTENT)
+            .into_response()
+    }
+}
+
+/// Axum route handler for deleting records matching a filter extracted from the URL path.
+///
+/// Returns `200 OK` with `DeleteRecordsWhere<T>::ReturnType` as JSON.
+#[async_trait]
+pub trait DeleteRecordsWhereRoute<T: Send>: DeleteRecordsWhere<T>
+where
+    <Self as DeleteRecordsWhere<T>>::ReturnType: serde::Serialize,
+{
+    type PathParams: Into<T> + DeserializeOwned + Send + 'static;
+    // TODO: Add a function for logging
+    async fn delete_records_where_route(
+        State(pool): State<PgPool>,
+        Path(path_params): Path<Self::PathParams>,
+    ) -> Response {
+        Self::delete_records_where(&pool, path_params.into())
+            .await
+            .map_err(ApiError::from)
+            .map(|response| (StatusCode::OK, response::Json(response)))
             .into_response()
     }
 }

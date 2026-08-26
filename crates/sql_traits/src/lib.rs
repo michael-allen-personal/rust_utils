@@ -92,3 +92,16 @@ where
         primary_key: <Self as HasPrimaryKey>::PrimaryKey,
     ) -> Result<Self::ReturnType, sqlx::Error>;
 }
+
+/// Deletes all records of this type from the database matching the given filter.
+#[async_trait]
+pub trait DeleteRecordsWhere<T>
+where
+    T: Send,
+{
+    type ReturnType: Sized;
+    async fn delete_records_where(
+        pool: &PgPool,
+        where_params: T,
+    ) -> Result<Self::ReturnType, sqlx::Error>;
+}
