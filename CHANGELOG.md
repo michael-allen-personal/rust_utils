@@ -8,6 +8,9 @@
 - `axum_helpers::GetRecordRoute` and a matching `GetRecordRoute` derive: an axum handler that reads the primary key out of the URL path and returns the record
 - `#[derive(BasicCrudRoutes)]` now also emits `impl GetRecordRoute`
 - Unit tests for the derive expansion functions in `macros`, covering the `PrimaryKey` single/composite/error cases and the emitted route impls
+- `sql_traits::DeleteRecordsWhere<T>`: deletes every record matching a filter, returning an implementor-chosen `ReturnType` (a row count, the deleted rows, or `()`). This is the filter-based counterpart to `DeleteSQL`, which addresses a single record by primary key
+- `axum_helpers::DeleteRecordsWhereRoute<T>`: an axum handler that reads the filter out of the URL path and returns `200 OK` with `DeleteRecordsWhere::ReturnType` as JSON. `DeleteRoute` discards its return value and answers `204 No Content`; this one serializes it, so a caller can see what the delete actually matched. Like the other `*Where` route traits it has no derive macro, because `PathParams` has to be chosen by the implementor rather than inferred from the struct
+- A route-mounting compile test (`crates/axum_helpers/tests/route_traits.rs`) that puts every route handler — including the three `*Where` handlers, which no test previously touched — onto an `axum::Router`. Implementing a route trait and mounting it are separate checks: `Router::route` is where axum's `Handler` requirements are actually enforced, and it is the site where the pre-`0.7.0` missing-`DeserializeOwned` bug surfaced. Like the derive tests, it reaches `axum`/`serde`/`sqlx`/`sql_traits` only through `axum_helpers`' re-exports
 
 ### Changed
 
