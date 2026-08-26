@@ -25,16 +25,11 @@ struct Widget {
     id: i64,
 }
 
-// Supertrait impls the route derives require. Bodies only need to type-check.
+// Supertrait impls the route derives require. Bodies only need to type-check. Note there is
+// no `GetLatestRecord` impl here: `BasicCrudRoutes` no longer bundles `GetLatestRoute`, so if
+// it started emitting that impl again this file would stop compiling on the missing supertrait.
 impl axum_helpers::sql_traits::HasPrimaryKey for Widget {
     type PrimaryKey = i64;
-}
-
-#[async_trait]
-impl axum_helpers::sql_traits::GetLatestRecord for Widget {
-    async fn get_latest_record(_pool: &PgPool) -> Result<Option<Self>, sqlx::Error> {
-        Ok(None)
-    }
 }
 
 #[async_trait]
@@ -84,6 +79,22 @@ impl axum_helpers::sql_traits::DeleteSQL for Widget {
     }
 }
 
+// `GetLatestRoute` is a standalone derive rather than part of `BasicCrudRoutes`, so it gets
+// its own type: `Gizmo` carries only what that one derive needs.
+#[derive(axum_helpers::serde::Serialize, macros::GetLatestRoute)]
+#[serde(crate = "axum_helpers::serde")]
+struct Gizmo {
+    #[allow(dead_code)]
+    id: i64,
+}
+
+#[async_trait]
+impl axum_helpers::sql_traits::GetLatestRecord for Gizmo {
+    async fn get_latest_record(_pool: &PgPool) -> Result<Option<Self>, sqlx::Error> {
+        Ok(None)
+    }
+}
+
 // Concrete check for the route traits without lifetime parameters. The `CreateRoute`
 // and `BulkCreateRoute` impls are verified by the compiler through the derive above.
 // The `DeserializeOwned` bound is restated because a trait's `where` clause is not
@@ -91,16 +102,22 @@ impl axum_helpers::sql_traits::DeleteSQL for Widget {
 // do not need this — they get the requirement checked at the impl site.
 fn assert_routes<T>()
 where
-    T: axum_helpers::GetLatestRoute
-        + axum_helpers::GetRecordRoute
-        + axum_helpers::ListRecordsRoute
-        + axum_helpers::DeleteRoute,
+    T: axum_helpers::GetRecordRoute + axum_helpers::ListRecordsRoute + axum_helpers::DeleteRoute,
     <T as axum_helpers::sql_traits::HasPrimaryKey>::PrimaryKey:
         axum_helpers::serde::de::DeserializeOwned,
 {
 }
 
+fn assert_get_latest_route<T: axum_helpers::GetLatestRoute>() {}
+
 #[test]
 fn basic_crud_routes_derive_is_self_contained() {
     assert_routes::<Widget>();
+}
+
+/// `GetLatestRoute` is no longer in the `BasicCrudRoutes` bundle, so the standalone derive
+/// is the only thing emitting `::axum_helpers::GetLatestRoute` — checked here on its own type.
+#[test]
+fn get_latest_route_derive_is_self_contained() {
+    assert_get_latest_route::<Gizmo>();
 }

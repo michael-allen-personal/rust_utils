@@ -131,7 +131,6 @@ fn expand_basic_crud_routes(input: TokenStream2) -> TokenStream2 {
     let name = &input.ident;
 
     let markers = [
-        quote! { ::axum_helpers::GetLatestRoute },
         quote! { ::axum_helpers::GetRecordRoute },
         quote! { ::axum_helpers::ListRecordsRoute },
         quote! { ::axum_helpers::DeleteRoute },
@@ -192,10 +191,14 @@ pub fn derive_list_records_route(input: TokenStream) -> TokenStream {
     expand_marker(input.into(), quote! { ::axum_helpers::ListRecordsRoute }).into()
 }
 
-/// Derive `BasicCrudRoutes` — implements all route traits for a type: `GetLatestRoute`,
+/// Derive `BasicCrudRoutes` — implements the primary-key CRUD route traits for a type:
 /// `GetRecordRoute`, `ListRecordsRoute`, `DeleteRoute`, `CreateRoute`, and `BulkCreateRoute`.
 ///
-/// Note this requires `GetRecord`, which `GetRecordRoute` takes as a supertrait.
+/// Each of those route traits has supertraits, so the deriving type must implement all of
+/// `HasPrimaryKey` (with a `DeserializeOwned` `PrimaryKey`), `GetRecord`, `ListRecords`,
+/// `DeleteSQL`, `InsertSQL`, and `BulkInsertSQL`, plus `Serialize` and `Deserialize`, with
+/// both insert traits' `ReturnType` also `Serialize`. A missing one is an error on the
+/// generated impl naming the trait, not on the derive.
 #[proc_macro_derive(BasicCrudRoutes)]
 pub fn derive_basic_crud_routes(input: TokenStream) -> TokenStream {
     expand_basic_crud_routes(input.into()).into()
@@ -266,7 +269,6 @@ mod tests {
         let out =
             expand_basic_crud_routes("struct Widget { id: i64 }".parse().unwrap()).to_string();
         for expected in [
-            "GetLatestRoute for Widget",
             "GetRecordRoute for Widget",
             "ListRecordsRoute for Widget",
             "DeleteRoute for Widget",
@@ -275,5 +277,12 @@ mod tests {
         ] {
             assert!(out.contains(expected), "missing {expected} in {out}");
         }
+    }
+
+    #[test]
+    fn basic_crud_routes_does_not_emit_get_latest_route() {
+        let out =
+            expand_basic_crud_routes("struct Widget { id: i64 }".parse().unwrap()).to_string();
+        assert!(!out.contains("GetLatestRoute"), "{out}");
     }
 }
