@@ -13,7 +13,8 @@ error_set! {
         NotFoundError,
     } || IOError
     IOError := {
-        Serde(serde_json::Error),
+        Deserialize(serde_json::Error),
+        Serialize(serde_json::Error),
         Sql(sqlx::Error),
     }
 }
@@ -39,11 +40,10 @@ impl From<ApiError> for ApiErrorResponse {
     fn from(value: ApiError) -> Self {
         match value {
             ApiError::NotFoundError => ApiErrorResponse::NotFound,
-            // TODO: Figure out a better way to differentiate serialization vs deserialization, as
-            // a deserialization error should throw a 400 and a serialization error should throw a
-            // 500
-            ApiError::Serde(_) => ApiErrorResponse::BadRequestWithMessage(value.to_string()),
-            ApiError::Sql(_) => ApiErrorResponse::InternalServerErrorWithMessage(value.to_string()),
+            ApiError::Deserialize(_) => ApiErrorResponse::BadRequestWithMessage(value.to_string()),
+            ApiError::Serialize(_) | ApiError::Sql(_) => {
+                ApiErrorResponse::InternalServerErrorWithMessage(value.to_string())
+            }
         }
     }
 }
