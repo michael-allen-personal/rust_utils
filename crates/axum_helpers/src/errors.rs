@@ -16,7 +16,8 @@ error_set! {
         InvalidQueryParams(axum::extract::rejection::QueryRejection),
     } || IOError || ValidationError
     IOError := {
-        Serde(serde_json::Error),
+        Deserialize(serde_json::Error),
+        Serialize(serde_json::Error),
         Sql(sqlx::Error),
     }
     /// What *validation* rejects about a request, as opposed to anything that went wrong
@@ -67,15 +68,14 @@ impl From<ApiError> for ApiErrorResponse {
     fn from(value: ApiError) -> Self {
         match value {
             ApiError::NotFoundError => ApiErrorResponse::NotFound,
-            // TODO: `Serde` is the odd one here. Figure out a better way to differentiate
-            // serialization vs deserialization, as a deserialization error should throw a 400
-            // and a serialization error should throw a 500
-            ApiError::Serde(_)
+            ApiError::Deserialize(_)
             | ApiError::InvalidPaginationLimit { .. }
             | ApiError::InvalidQueryParams(_) => {
                 ApiErrorResponse::BadRequestWithMessage(value.to_string())
             }
-            ApiError::Sql(_) => ApiErrorResponse::InternalServerErrorWithMessage(value.to_string()),
+            ApiError::Serialize(_) | ApiError::Sql(_) => {
+                ApiErrorResponse::InternalServerErrorWithMessage(value.to_string())
+            }
         }
     }
 }
