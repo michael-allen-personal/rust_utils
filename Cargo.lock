@@ -123,6 +123,7 @@ dependencies = [
  "serde_json",
  "sql_traits",
  "sqlx",
+ "tokio",
 ]
 
 [[package]]
@@ -1238,6 +1239,8 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "macros",
+ "serde",
+ "serde_json",
  "sqlx",
 ]
 
@@ -1282,6 +1285,8 @@ dependencies = [
  "sha2 0.10.9",
  "smallvec",
  "thiserror",
+ "tokio",
+ "tokio-stream",
  "tracing",
  "url",
 ]
@@ -1321,6 +1326,7 @@ dependencies = [
  "sqlx-sqlite",
  "syn",
  "thiserror",
+ "tokio",
  "url",
 ]
 
@@ -1505,6 +1511,7 @@ version = "1.49.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72a2903cd7736441aac9df9d7688bd0ce48edccaadf181c3b90be801e81d3d86"
 dependencies = [
+ "bytes",
  "libc",
  "mio",
  "pin-project-lite",
@@ -1522,6 +1529,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tokio-stream"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]
