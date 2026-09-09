@@ -58,10 +58,12 @@ pub trait GetLatestRoute: GetLatestRecord + serde::Serialize {
 ///
 /// # Composite primary keys
 ///
-/// A composite `PrimaryKey` is a tuple, so axum binds path segments **positionally, not by
-/// name**: the route's segment order must match the order of the `#[macros(primary_key)]`
-/// fields on the struct. Declaring them out of order compiles and runs, but queries the
-/// wrong row.
+/// A composite `PrimaryKey` is a generated `{Name}PrimaryKey` struct, so axum binds path
+/// segments **by name**: each segment must be named after the field it fills, and the order
+/// the route declares them in does not matter. A segment naming no field is ignored, so a
+/// route may capture more than the key — `/orgs/{org_id}/memberships/{user_id}/{group_id}`
+/// works — and a key field no segment names is a `400`, answered by the extractor before
+/// this handler runs.
 #[async_trait]
 pub trait GetRecordRoute: GetRecord + serde::Serialize
 where
@@ -177,10 +179,12 @@ where
 ///
 /// # Composite primary keys
 ///
-/// A composite `PrimaryKey` is a tuple, so axum binds path segments **positionally, not by
-/// name**: the route's segment order must match the order of the `#[macros(primary_key)]`
-/// fields on the struct. Declaring them out of order compiles and runs, but deletes the
-/// wrong row.
+/// A composite `PrimaryKey` is a generated `{Name}PrimaryKey` struct, so axum binds path
+/// segments **by name**: each segment must be named after the field it fills, and the order
+/// the route declares them in does not matter. A segment naming no field is ignored, so a
+/// route may capture more than the key — `/orgs/{org_id}/memberships/{user_id}/{group_id}`
+/// works — and a key field no segment names is a `400`, answered by the extractor before
+/// this handler runs.
 #[async_trait]
 pub trait DeleteRoute: DeleteRecord + HasPrimaryKey
 where
@@ -245,10 +249,12 @@ where
 ///
 /// # Composite primary keys
 ///
-/// A composite `PrimaryKey` is a tuple, so axum binds path segments **positionally, not by
-/// name**: the route's segment order must match the order of the `#[macros(primary_key)]`
-/// fields on the struct. Declaring them out of order compiles and runs, but replaces the
-/// wrong row.
+/// A composite `PrimaryKey` is a generated `{Name}PrimaryKey` struct, so axum binds path
+/// segments **by name**: each segment must be named after the field it fills, and the order
+/// the route declares them in does not matter. A segment naming no field is ignored, so a
+/// route may capture more than the key — `/orgs/{org_id}/memberships/{user_id}/{group_id}`
+/// works — and a key field no segment names is a `400`, answered by the extractor before
+/// this handler runs.
 #[async_trait]
 pub trait ReplaceRoute: ReplaceRecord + HasRequestBody + serde::Serialize
 where
@@ -293,10 +299,12 @@ where
 ///
 /// # Composite primary keys
 ///
-/// A composite `PrimaryKey` is a tuple, so axum binds path segments **positionally, not by
-/// name**: the route's segment order must match the order of the `#[macros(primary_key)]`
-/// fields on the struct. Declaring them out of order compiles and runs, but updates the
-/// wrong row.
+/// A composite `PrimaryKey` is a generated `{Name}PrimaryKey` struct, so axum binds path
+/// segments **by name**: each segment must be named after the field it fills, and the order
+/// the route declares them in does not matter. A segment naming no field is ignored, so a
+/// route may capture more than the key — `/orgs/{org_id}/memberships/{user_id}/{group_id}`
+/// works — and a key field no segment names is a `400`, answered by the extractor before
+/// this handler runs.
 #[async_trait]
 pub trait UpdateRoute: UpdateRecord + serde::Serialize
 where

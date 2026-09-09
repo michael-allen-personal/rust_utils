@@ -23,6 +23,11 @@ macros = { path = "../macros" }
 # Only `tests/route_responses.rs` needs a runtime, to await a handler and read the status
 # code it answers with. The other test crates are compile-and-mount assertions.
 tokio = { workspace = true }
+# `tests/route_responses.rs` drives a `Router` with a real request, which is the only way to
+# exercise axum's URL-segment binding: calling a handler directly takes a `Path` that was
+# built by hand, so it proves nothing about which segment filled which field. Spelled the way
+# axum spells its own dependency on it, so dev-dep feature unification cannot pull in extras.
+tower = { workspace = true }
 # Enables the sqlx runtime for test builds only. The library deliberately does not pick one
 # in `[dependencies]`, leaving that to the consumer; `PgPool::connect_lazy` panics without
 # it, and that pool is what lets a handler be called without a database.

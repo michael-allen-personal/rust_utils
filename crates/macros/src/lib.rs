@@ -36,7 +36,8 @@ enum DeriveList {
     Body,
     /// `Update`, which reads `update_derive`.
     Update,
-    /// `PrimaryKey`, which generates no type and so reads neither.
+    /// `PrimaryKey`, whose only generated type — the key struct for a composite key —
+    /// carries a fixed set of derives, so it reads neither list.
     Neither,
 }
 
@@ -172,11 +173,147 @@ fn clone_field(member: &Member) -> TokenStream2 {
     quote! { ::core::clone::Clone::clone(&self.#member) }
 }
 
+/// The name of the type a composite primary key is carried by: `{Record}PrimaryKey`,
+/// alongside the `{Record}Body` and `{Record}Update` the other derives generate.
+fn primary_key_ident(name: &Ident) -> Ident {
+    format_ident!("{}PrimaryKey", name)
+}
+
+/// How a record's primary key is represented.
+///
+/// One marked field is represented by that field's own type: a lone path segment binds
+/// unambiguously, so there is nothing a wrapper would fix, and `Path<i64>` keeps accepting
+/// a route whatever it names the segment. Several marked fields are represented by a
+/// generated `{Record}PrimaryKey` struct, because `axum::extract::Path` fills a *tuple*
+/// from URI segments left to right with no name matching: a route declaring its segments in
+/// a different order from the marked fields compiles, mounts, runs — and addresses the
+/// wrong row, silently. A struct binds by field name, so segment order stops mattering and
+/// a segment named after nothing is a `400` instead.
+///
+/// Built once and shared by the `PrimaryKey` and `Record` derives, so the associated type,
+/// the accessor, and the pattern that takes a key apart again cannot drift.
+struct PrimaryKeyShape {
+    /// The generated key struct. Empty for a single-field key, which declares no new type.
+    declaration: TokenStream2,
+    /// What `HasPrimaryKey::PrimaryKey` is set to.
+    ty: TokenStream2,
+    /// The expression `primary_key` returns, read off `&self`.
+    value: TokenStream2,
+}
+
+impl PrimaryKeyShape {
+    /// `vis` is the record's own visibility, which the generated struct takes; each field
+    /// keeps the visibility it has on the record, exactly as `{Record}Body` does.
+    ///
+    /// Two things both callers establish before calling: `pk_fields` is non-empty, since an
+    /// unmarked struct is rejected first and an empty list would otherwise generate a key
+    /// struct with no fields; and a composite key's members are named, since
+    /// `try_expand_primary_key` rejects a tuple struct and `Record` only accepts
+    /// named-field structs at all.
+    fn new(name: &Ident, vis: &Visibility, pk_fields: &[(Member, Field)]) -> Self {
+        if let [(member, field)] = pk_fields {
+            let ty = &field.ty;
+            return Self {
+                declaration: quote! {},
+                ty: quote! { #ty },
+                value: clone_field(member),
+            };
+        }
+
+        let key_ident = primary_key_ident(name);
+
+        // Only the visibility and the type are carried over. The record's other attributes
+        // are deliberately *not* forwarded, unlike `{Record}Body` and `{Record}Update`:
+        // this type's wire format is URL path segments, not JSON, so a `rename_all` meant
+        // for a request body would silently rename the path segments a route has to
+        // declare, and a `deny_unknown_fields` would reject any route capturing a segment
+        // the key does not name.
+        let fields = pk_fields.iter().map(|(member, field)| {
+            let field_vis = &field.vis;
+            let ty = &field.ty;
+            quote! { #field_vis #member: #ty }
+        });
+        let inits = pk_fields.iter().map(|(member, _)| {
+            let value = clone_field(member);
+            quote! { #member: #value }
+        });
+
+        // `Deserialize` is what makes this type work at all — every route trait taking the
+        // key out of a path bounds it `DeserializeOwned` — so it is emitted rather than
+        // asked for, unlike the `body_derive`/`update_derive` lists. Same call the
+        // `str_enum!` macro makes for its fixed derive set. Every path is absolute, and
+        // `serde` is reached through `sql_traits`' re-export, so the expansion needs
+        // nothing in scope at the use site.
+        let declaration = quote! {
+            #[derive(
+                ::core::clone::Clone,
+                ::core::fmt::Debug,
+                ::core::cmp::PartialEq,
+                ::sql_traits::serde::Deserialize
+            )]
+            #[serde(crate = "::sql_traits::serde")]
+            #vis struct #key_ident {
+                #( #fields ),*
+            }
+        };
+
+        Self {
+            declaration,
+            ty: quote! { #key_ident },
+            value: quote! { #key_ident { #( #inits ),* } },
+        }
+    }
+
+    /// Emits `impl ::sql_traits::HasPrimaryKey`, preceded by the key struct when there is
+    /// one. Shared by the `PrimaryKey` and `Record` derives so the two cannot drift on the
+    /// associated type or the accessor body.
+    ///
+    /// Both derives emit the declaration, and neither can double up: they both emit
+    /// `impl HasPrimaryKey`, so deriving the pair together is already a duplicate-impl
+    /// error.
+    fn has_primary_key_impl(&self, name: &Ident) -> TokenStream2 {
+        let Self {
+            declaration,
+            ty,
+            value,
+        } = self;
+
+        quote! {
+            #declaration
+
+            impl ::sql_traits::HasPrimaryKey for #name {
+                type PrimaryKey = #ty;
+
+                fn primary_key(&self) -> <Self as ::sql_traits::HasPrimaryKey>::PrimaryKey {
+                    #value
+                }
+            }
+        }
+    }
+
+    /// The `let` binding one local per marked field, so `Record` can rebuild a record from
+    /// a key. A single-field key *is* the value; a composite one is taken apart by name,
+    /// which is what keeps the rebuild correct no matter what order the fields are in.
+    fn destructure(&self, pk_fields: &[(Member, Field)], locals: &[Ident]) -> TokenStream2 {
+        if let [local] = locals {
+            return quote! { let #local = primary_key; };
+        }
+
+        let ty = &self.ty;
+        let bindings = pk_fields
+            .iter()
+            .zip(locals)
+            .map(|((member, _), local)| quote! { #member: #local });
+        quote! { let #ty { #( #bindings ),* } = primary_key; }
+    }
+}
+
 /// Body of the `PrimaryKey` derive.
 /// - 0 fields  -> compile error.
 /// - 1 field   -> PrimaryKey = <field_type>, read back as that field.
-/// - N fields  -> PrimaryKey = (<t1, t2, ...>) in the order encountered, read back as a
-///   tuple in that same order.
+/// - N fields  -> PrimaryKey = a generated `{Name}PrimaryKey` struct with a field per marked
+///   field, read back as that struct. Named-field structs only; see [`PrimaryKeyShape`] for
+///   why a composite key cannot stay a tuple.
 fn expand_primary_key(input: TokenStream2) -> TokenStream2 {
     try_expand_primary_key(input).unwrap_or_else(|error| error.to_compile_error())
 }
@@ -191,9 +328,9 @@ fn try_expand_primary_key(input: TokenStream2) -> syn::Result<TokenStream2> {
     // tolerated: `#[derive(PrimaryKey, Update)]` is a valid pairing.
     container_derives(&input.attrs, DeriveList::Neither)?;
 
-    // Collect marked fields, keeping the accessor alongside the type so the associated
+    // Collect marked fields, keeping the accessor alongside the field so the associated
     // type and the `primary_key` body are built from one list and cannot fall out of order.
-    let mut pk_fields: Vec<(Member, Type)> = Vec::new();
+    let mut pk_fields: Vec<(Member, Field)> = Vec::new();
 
     match &input.data {
         Data::Struct(data_struct) => match &data_struct.fields {
@@ -202,14 +339,14 @@ fn try_expand_primary_key(input: TokenStream2) -> syn::Result<TokenStream2> {
                     if is_pk_attr(&field.attrs)? {
                         // Named fields always carry an ident.
                         let ident = field.ident.clone().expect("named field has an ident");
-                        pk_fields.push((Member::Named(ident), field.ty.clone()));
+                        pk_fields.push((Member::Named(ident), field.clone()));
                     }
                 }
             }
             Fields::Unnamed(unnamed) => {
                 for (index, field) in unnamed.unnamed.iter().enumerate() {
                     if is_pk_attr(&field.attrs)? {
-                        pk_fields.push((Member::Unnamed(Index::from(index)), field.ty.clone()));
+                        pk_fields.push((Member::Unnamed(Index::from(index)), field.clone()));
                     }
                 }
             }
@@ -230,31 +367,24 @@ fn try_expand_primary_key(input: TokenStream2) -> syn::Result<TokenStream2> {
         ));
     }
 
-    // TODO: Make this a struct, not a tuple so i can deserialize named values
-    // in paths
-    Ok(has_primary_key_impl(name, &pk_fields))
-}
-
-/// Emits `impl ::sql_traits::HasPrimaryKey`. Shared by the `PrimaryKey` and `Record`
-/// derives so the two cannot drift on the associated type or the accessor body.
-fn has_primary_key_impl(name: &Ident, pk_fields: &[(Member, Type)]) -> TokenStream2 {
-    let (pk_type_tokens, pk_value_tokens) = if let [(member, ty)] = pk_fields {
-        (quote! { #ty }, clone_field(member))
-    } else {
-        let types = pk_fields.iter().map(|(_, ty)| ty);
-        let values = pk_fields.iter().map(|(member, _)| clone_field(member));
-        (quote! { ( #( #types ),* ) }, quote! { ( #( #values ),* ) })
-    };
-
-    quote! {
-        impl ::sql_traits::HasPrimaryKey for #name {
-            type PrimaryKey = #pk_type_tokens;
-
-            fn primary_key(&self) -> <Self as ::sql_traits::HasPrimaryKey>::PrimaryKey {
-                #pk_value_tokens
-            }
-        }
+    // A tuple struct has no field names, so there is nothing for the generated key struct
+    // to bind a path segment to. Leaving such a key as a tuple would keep exactly the
+    // silent positional binding the struct exists to prevent, in the one place it could
+    // not be fixed — so it is an error naming the shape that does work. A single marked
+    // field is unaffected: it declares no key struct at all.
+    if pk_fields.len() > 1
+        && pk_fields
+            .iter()
+            .any(|(member, _)| matches!(member, Member::Unnamed(_)))
+    {
+        return Err(syn::Error::new_spanned(
+            &input,
+            "a composite primary key needs named fields: the generated key struct binds URL \
+             path segments by name, and a tuple struct's fields have none",
+        ));
     }
+
+    Ok(PrimaryKeyShape::new(name, &input.vis, &pk_fields).has_primary_key_impl(name))
 }
 
 /// Reads the struct-level derive list belonging to `reader` off the container.
@@ -355,12 +485,12 @@ fn try_expand_record(input: TokenStream2) -> syn::Result<TokenStream2> {
         ));
     };
 
-    let mut pk_fields: Vec<(Member, Type)> = Vec::new();
+    let mut pk_fields: Vec<(Member, Field)> = Vec::new();
     let mut body_fields: Vec<Field> = Vec::new();
     for field in &named.named {
         let ident = field.ident.clone().expect("named field has an ident");
         if is_pk_attr(&field.attrs)? {
-            pk_fields.push((Member::Named(ident), field.ty.clone()));
+            pk_fields.push((Member::Named(ident), field.clone()));
         } else {
             let mut body_field = field.clone();
             body_field.attrs = forwarded_attrs(&body_field.attrs);
@@ -385,24 +515,19 @@ fn try_expand_record(input: TokenStream2) -> syn::Result<TokenStream2> {
         quote! { #[derive( #( #derives ),* )] }
     };
 
-    let has_primary_key = has_primary_key_impl(name, &pk_fields);
+    // One shape, shared with the `PrimaryKey` derive: the associated type, the accessor,
+    // and the pattern below that takes a key apart again are built from it together, so a
+    // key field can never be rebuilt into the wrong slot.
+    let shape = PrimaryKeyShape::new(name, vis, &pk_fields);
+    let has_primary_key = shape.has_primary_key_impl(name);
+    let key_type = &shape.ty;
 
+    // Named locals rather than the fields' own names: a key field named `body` would
+    // otherwise shadow the `body` parameter and take `body.#field` with it.
     let pk_locals: Vec<Ident> = (0..pk_fields.len())
         .map(|index| format_ident!("__pk{}", index))
         .collect();
-    let destructure_key = if let [local] = pk_locals.as_slice() {
-        quote! { let #local = primary_key; }
-    } else {
-        quote! { let ( #( #pk_locals ),* ) = primary_key; }
-    };
-
-    let pk_types = pk_fields.iter().map(|(_, ty)| ty);
-    let key_type = if pk_fields.len() == 1 {
-        let (_, ty) = &pk_fields[0];
-        quote! { #ty }
-    } else {
-        quote! { ( #( #pk_types ),* ) }
-    };
+    let destructure_key = shape.destructure(&pk_fields, &pk_locals);
 
     let key_inits = pk_fields
         .iter()
@@ -638,9 +763,23 @@ fn expand_basic_crud_routes(input: TokenStream2) -> TokenStream2 {
 
 /// Derive `HasPrimaryKey` by inspecting fields marked with #[macros(primary_key)].
 ///
-/// One marked field gives `PrimaryKey = <that field's type>`; several give a tuple in
-/// declaration order. `primary_key` reads those same fields back off `&self` by cloning
-/// them, so every marked field's type must be `Clone`.
+/// One marked field gives `PrimaryKey = <that field's type>`. Several give a generated
+/// `{Name}PrimaryKey` struct with one field per marked field, named and typed as the record
+/// names and types them — so `axum::extract::Path` binds each URL segment **by name** and
+/// the order a route declares them in stops mattering. A tuple would bind them
+/// positionally, which compiles and runs while addressing the wrong row; a composite key on
+/// a tuple struct, having no field names to bind to, is a compile error rather than a
+/// silent fallback to that behaviour.
+///
+/// The generated struct always derives `Clone`, `Debug`, `PartialEq` and
+/// `serde::Deserialize`, and takes the record's own visibility; each of its fields keeps the
+/// visibility it has on the record. Its attributes are deliberately *not* copied from the
+/// record: it is addressed by URL path segments rather than by JSON, so a `serde` rename
+/// meant for a request body has no business renaming the segments a route must declare.
+/// The name `{Name}PrimaryKey` is reserved, exactly as `{Name}Body` and `{Name}Update` are.
+///
+/// `primary_key` reads the marked fields back off `&self` by cloning them, so every marked
+/// field's type must be `Clone`.
 #[proc_macro_derive(PrimaryKey, attributes(macros))]
 pub fn derive_primary_key(input: TokenStream) -> TokenStream {
     expand_primary_key(input.into()).into()
@@ -661,8 +800,13 @@ pub fn derive_primary_key(input: TokenStream) -> TokenStream {
 /// A `#[macros(...)]` attribute that is not `primary_key` on a field or `body_derive(...)`
 /// on the struct is a compile error, never a silent no-op.
 ///
-/// Do not derive `PrimaryKey` alongside this; both emit `impl HasPrimaryKey` and the
-/// result is a duplicate-impl error.
+/// A composite key gets the same generated `{Name}PrimaryKey` struct
+/// `#[derive(macros::PrimaryKey)]` emits, from the same code — see that derive for what the
+/// struct looks like and why it is not a tuple.
+///
+/// Do not derive `PrimaryKey` alongside this; both emit `impl HasPrimaryKey` (and, for a
+/// composite key, both emit `{Name}PrimaryKey`), so the result is a pile of duplicate-item
+/// and duplicate-impl errors.
 #[proc_macro_derive(Record, attributes(macros))]
 pub fn derive_record(input: TokenStream) -> TokenStream {
     expand_record(input.into()).into()
@@ -803,12 +947,83 @@ mod tests {
         assert!(out.contains("type PrimaryKey = i64"), "{out}");
     }
 
+    // The whole point of the change: a composite key is a *named* struct, so
+    // `axum::extract::Path` binds each URL segment by name. A tuple bound them
+    // positionally, which addressed the wrong row whenever a route declared its segments in
+    // a different order from the marked fields.
     #[test]
-    fn multiple_marked_fields_become_a_tuple_in_declaration_order() {
+    fn multiple_marked_fields_become_a_named_struct() {
         let out = expand(
             "struct Membership { #[macros(primary_key)] user_id: i64, #[macros(primary_key)] group_id: u32 }",
         );
-        assert!(out.contains("type PrimaryKey = (i64 , u32)"), "{out}");
+        assert!(
+            out.contains("type PrimaryKey = MembershipPrimaryKey"),
+            "{out}"
+        );
+        assert!(
+            out.contains("struct MembershipPrimaryKey { user_id : i64 , group_id : u32 }"),
+            "{out}"
+        );
+    }
+
+    // `Deserialize` is what every route trait taking the key out of a path bounds on, and
+    // the `crate` path is what lets a use site reach `serde` without naming it.
+    #[test]
+    fn the_generated_key_struct_carries_the_fixed_derive_set() {
+        let out = expand(
+            "struct Membership { #[macros(primary_key)] user_id: i64, #[macros(primary_key)] group_id: u32 }",
+        );
+        for expected in [
+            ":: core :: clone :: Clone",
+            ":: core :: fmt :: Debug",
+            ":: core :: cmp :: PartialEq",
+            ":: sql_traits :: serde :: Deserialize",
+            r#"# [serde (crate = "::sql_traits::serde")]"#,
+        ] {
+            assert!(out.contains(expected), "missing {expected} in {out}");
+        }
+    }
+
+    // A lone path segment binds unambiguously, so there is nothing a wrapper would fix —
+    // and wrapping would break every `get_record(&pool, 5)` for no gain.
+    #[test]
+    fn a_single_marked_field_generates_no_key_struct() {
+        let out = expand("struct User { #[macros(primary_key)] id: i64, name: String }");
+        assert!(!out.contains("UserPrimaryKey"), "{out}");
+        assert!(!out.contains("struct"), "{out}");
+    }
+
+    // The key struct is addressed by URL path segments, not by JSON. Forwarding a
+    // `rename_all` meant for a request body would silently rename the segments a route has
+    // to declare.
+    #[test]
+    fn the_record_attributes_do_not_reach_the_key_struct() {
+        let out = expand(
+            "#[serde(rename_all = \"camelCase\")] struct Membership { #[macros(primary_key)] user_id: i64, #[macros(primary_key)] group_id: u32 }",
+        );
+        assert!(!out.contains("rename_all"), "{out}");
+    }
+
+    #[test]
+    fn the_key_struct_takes_the_record_visibility_and_keeps_each_field_own() {
+        let out = expand(
+            "pub struct Membership { #[macros(primary_key)] pub(crate) user_id: i64, #[macros(primary_key)] group_id: u32 }",
+        );
+        assert!(out.contains("pub struct MembershipPrimaryKey"), "{out}");
+        assert!(
+            out.contains("{ pub (crate) user_id : i64 , group_id : u32 }"),
+            "{out}"
+        );
+    }
+
+    // A tuple struct has no field names for a path segment to bind to, so there is nothing
+    // to generate. Leaving it as a tuple would keep the silent positional binding in the
+    // one place it could not be fixed.
+    #[test]
+    fn a_composite_key_on_a_tuple_struct_is_a_compile_error() {
+        let out = expand("struct Pair(#[macros(primary_key)] i64, #[macros(primary_key)] u32);");
+        assert!(out.contains("compile_error"), "{out}");
+        assert!(out.contains("needs named fields"), "{out}");
     }
 
     #[test]
@@ -821,13 +1036,13 @@ mod tests {
     }
 
     #[test]
-    fn multiple_marked_fields_are_read_back_as_a_tuple_in_declaration_order() {
+    fn multiple_marked_fields_are_read_back_into_the_key_struct_by_name() {
         let out = expand(
             "struct Membership { #[macros(primary_key)] user_id: i64, #[macros(primary_key)] group_id: u32 }",
         );
         assert!(
             out.contains(
-                "(:: core :: clone :: Clone :: clone (& self . user_id) , :: core :: clone :: Clone :: clone (& self . group_id))"
+                "MembershipPrimaryKey { user_id : :: core :: clone :: Clone :: clone (& self . user_id) , group_id : :: core :: clone :: Clone :: clone (& self . group_id) }"
             ),
             "{out}"
         );
@@ -1240,15 +1455,42 @@ mod tests {
         assert!(out.contains("No field marked"), "{out}");
     }
 
+    // `Record` builds its key from the same shape `PrimaryKey` does, so the struct, the
+    // associated type and the pattern that takes a key apart cannot drift onto different
+    // spellings — which is what would let a key field be rebuilt into the wrong slot.
     #[test]
-    fn record_destructures_a_composite_key_when_rebuilding() {
+    fn record_destructures_a_composite_key_by_name_when_rebuilding() {
         let out = expand_rec(
             "struct Membership { #[macros(primary_key)] user_id: i64, #[macros(primary_key)] group_id: u32, role: String }",
         );
-        assert!(out.contains("let (__pk0 , __pk1) = primary_key"), "{out}");
         assert!(
-            out.contains("From < ((i64 , u32) , MembershipBody) > for Membership"),
+            out.contains("struct MembershipPrimaryKey { user_id : i64 , group_id : u32 }"),
             "{out}"
         );
+        assert!(
+            out.contains(
+                "let MembershipPrimaryKey { user_id : __pk0 , group_id : __pk1 } = primary_key"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("From < (MembershipPrimaryKey , MembershipBody) > for Membership"),
+            "{out}"
+        );
+    }
+
+    // A key field named `body` must not capture the `body: MembershipBody` parameter the
+    // rebuild reads its non-key fields off, which is why the destructure binds to `__pk{n}`
+    // locals rather than to the fields' own names.
+    #[test]
+    fn a_key_field_named_body_does_not_shadow_the_request_body() {
+        let out = expand_rec(
+            "struct Doc { #[macros(primary_key)] body: String, #[macros(primary_key)] rev: i64, title: String }",
+        );
+        assert!(
+            out.contains("let DocPrimaryKey { body : __pk0 , rev : __pk1 } = primary_key"),
+            "{out}"
+        );
+        assert!(out.contains("title : body . title"), "{out}");
     }
 }
