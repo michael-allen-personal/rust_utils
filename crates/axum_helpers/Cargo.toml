@@ -14,7 +14,16 @@ sql_traits = { workspace = true }
 sqlx = { workspace = true }
 
 [dev-dependencies]
-# Consumer-perspective compile test for the route derive macros. `axum_helpers` (the
-# crate under test) and `macros` are the ONLY dependencies visible to the test crate —
-# no direct serde/sqlx/sql_traits — proving the derive output is self-contained.
+# Consumer-perspective compile tests for the route derive macros. Nothing here declares
+# `serde` or `sql_traits`: the test crates reach them only through `axum_helpers`'
+# re-exports, which is what proves the derive output is self-contained. That discipline
+# lives in the test files themselves rather than in Cargo — a package's `[dependencies]`
+# are in scope for its own test targets — so keep new tests using the re-export paths.
 macros = { path = "../macros" }
+# Only `tests/route_responses.rs` needs a runtime, to await a handler and read the status
+# code it answers with. The other test crates are compile-and-mount assertions.
+tokio = { workspace = true }
+# Enables the sqlx runtime for test builds only. The library deliberately does not pick one
+# in `[dependencies]`, leaving that to the consumer; `PgPool::connect_lazy` panics without
+# it, and that pool is what lets a handler be called without a database.
+sqlx = { workspace = true, features = ["runtime-tokio"] }

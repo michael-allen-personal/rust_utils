@@ -8,11 +8,12 @@ use serde::de::DeserializeOwned;
 use sqlx::PgPool;
 
 use sql_traits::{
-    BulkInsertSQL, DeleteRecordsWhere, DeleteSQL, GetLatestRecord, GetRecord, GetRecordWhere,
-    HasPrimaryKey, InsertSQL, ListRecords, ListRecordsWhere,
+    BulkInsertRecords, DeleteRecord, DeleteRecordsWhere, GetLatestRecord, GetRecord,
+    GetRecordWhere, HasPrimaryKey, HasRequestBody, HasUpdateFields, InsertRecord, ListRecords,
+    ListRecordsWhere, ReplaceRecord, UpdateFields, UpdateRecord,
 };
 
-use crate::ApiError;
+use crate::{ApiError, ApiErrorResponse};
 
 /// Renders the `Result<Option<Record>, ApiError>` shape shared by every fetch-one route
 /// handler: `200 OK` with the record as JSON, `on_missing()` when the query matched no row,
@@ -103,7 +104,7 @@ pub trait GetRecordWhereRoute<T: Send>: GetRecordWhere<T> + serde::Serialize {
 pub trait ListRecordsRoute: ListRecords + serde::Serialize {
     // TODO: Add a function for logging
     async fn list_records_route(State(pool): State<PgPool>) -> Response {
-        Self::get_all(&pool)
+        Self::list_records(&pool)
             .await
             .map_err(ApiError::from)
             .map(|records| (StatusCode::OK, response::Json(records)))
@@ -122,7 +123,7 @@ pub trait ListRecordsWhereRoute<T: Send>: ListRecordsWhere<T> + serde::Serialize
         State(pool): State<PgPool>,
         Path(path_params): Path<Self::PathParams>,
     ) -> Response {
-        Self::get_records(&pool, path_params.into())
+        Self::list_records_where(&pool, path_params.into())
             .await
             .map_err(ApiError::from)
             .map(|records| (StatusCode::OK, response::Json(records)))
@@ -132,18 +133,18 @@ pub trait ListRecordsWhereRoute<T: Send>: ListRecordsWhere<T> + serde::Serialize
 
 /// Axum route handler for creating a single record from a JSON request body.
 ///
-/// Returns `201 Created` with the `InsertSQL::ReturnType` as JSON.
+/// Returns `201 Created` with the `InsertRecord::ReturnType` as JSON.
 #[async_trait]
-pub trait CreateRoute<'de>: InsertSQL + serde::Deserialize<'de>
+pub trait CreateRoute<'de>: InsertRecord + serde::Deserialize<'de>
 where
-    <Self as InsertSQL>::ReturnType: serde::Serialize,
+    <Self as InsertRecord>::ReturnType: serde::Serialize,
 {
     // TODO: Add a function for logging
     async fn create_route(
         State(pool): State<PgPool>,
         extract::Json(obj): extract::Json<Self>,
     ) -> Response {
-        obj.insert_sql(&pool)
+        obj.insert_record(&pool)
             .await
             .map_err(ApiError::from)
             .map(|record| (StatusCode::CREATED, response::Json(record)))
@@ -153,18 +154,18 @@ where
 
 /// Axum route handler for creating multiple records from a JSON array request body.
 ///
-/// Returns `201 Created` with the `BulkInsertSQL::ReturnType` as JSON.
+/// Returns `201 Created` with the `BulkInsertRecords::ReturnType` as JSON.
 #[async_trait]
-pub trait BulkCreateRoute<'de>: BulkInsertSQL + serde::Deserialize<'de>
+pub trait BulkCreateRoute<'de>: BulkInsertRecords + serde::Deserialize<'de>
 where
-    <Self as BulkInsertSQL>::ReturnType: serde::Serialize,
+    <Self as BulkInsertRecords>::ReturnType: serde::Serialize,
 {
     // TODO: Add a function for logging
     async fn bulk_create_route(
         State(pool): State<PgPool>,
         extract::Json(objs): extract::Json<Vec<Self>>,
     ) -> Response {
-        Self::bulk_insert_sql(&pool, &objs)
+        Self::bulk_insert_records(&pool, &objs)
             .await
             .map_err(ApiError::from)
             .map(|records| (StatusCode::CREATED, response::Json(records)))
@@ -181,7 +182,7 @@ where
 /// fields on the struct. Declaring them out of order compiles and runs, but deletes the
 /// wrong row.
 #[async_trait]
-pub trait DeleteRoute: DeleteSQL + HasPrimaryKey
+pub trait DeleteRoute: DeleteRecord + HasPrimaryKey
 where
     <Self as HasPrimaryKey>::PrimaryKey: DeserializeOwned,
 {
@@ -190,7 +191,7 @@ where
         State(pool): State<PgPool>,
         Path(primary_key): Path<<Self as HasPrimaryKey>::PrimaryKey>,
     ) -> Response {
-        <Self as DeleteSQL>::delete_sql(&pool, primary_key)
+        <Self as DeleteRecord>::delete_record(&pool, primary_key)
             .await
             .map_err(ApiError::from)
             .map(|_| StatusCode::NO_CONTENT)
@@ -217,5 +218,105 @@ where
             .map_err(ApiError::from)
             .map(|response| (StatusCode::OK, response::Json(response)))
             .into_response()
+    }
+}
+
+/// Axum route handler for replacing an entire record. The primary key comes from the URL
+/// path; the JSON body is `HasRequestBody::RequestBody`, which carries every field
+/// *except* the key.
+///
+/// Returns `200 OK` with the replaced record as JSON, or `404 Not Found` if the key
+/// matches no row — the same convention `GetRecordRoute` follows.
+///
+/// # Why the body has no primary key
+///
+/// The path is the only place the key is read from, so there is no second key to
+/// reconcile with it. By default a client that sends the key in the body anyway still
+/// succeeds — serde ignores unknown fields — and the value is discarded. A generated
+/// OpenAPI schema therefore describes the body without the key, without needing to be
+/// told to hide it.
+///
+/// That tolerance is serde's default, not a promise this trait makes. `macros::Record`
+/// forwards every non-`macros` container attribute to the generated body, so a record
+/// carrying `#[serde(deny_unknown_fields)]` yields a body that carries it too, and a
+/// payload with the key in it is then rejected with `422 Unprocessable Entity`. That is
+/// deliberate: an explicit opt-in to strictness is honoured rather than quietly
+/// overridden. A type that needs the tolerance should not declare that attribute.
+///
+/// # Composite primary keys
+///
+/// A composite `PrimaryKey` is a tuple, so axum binds path segments **positionally, not by
+/// name**: the route's segment order must match the order of the `#[macros(primary_key)]`
+/// fields on the struct. Declaring them out of order compiles and runs, but replaces the
+/// wrong row.
+#[async_trait]
+pub trait ReplaceRoute: ReplaceRecord + HasRequestBody + serde::Serialize
+where
+    <Self as HasPrimaryKey>::PrimaryKey: DeserializeOwned,
+    <Self as HasRequestBody>::RequestBody: DeserializeOwned + Send + 'static,
+{
+    // TODO: Add a function for logging
+    async fn replace_route(
+        State(pool): State<PgPool>,
+        Path(primary_key): Path<<Self as HasPrimaryKey>::PrimaryKey>,
+        extract::Json(body): extract::Json<<Self as HasRequestBody>::RequestBody>,
+    ) -> Response {
+        let result = <Self as HasRequestBody>::from_request_body(body, primary_key)
+            .replace_record(&pool)
+            .await
+            .map_err(ApiError::from);
+        optional_record_response(result, not_found)
+    }
+}
+
+/// Axum route handler for a partial update. The primary key comes from the URL path; the
+/// JSON body is `HasUpdateFields::UpdateFields`, which carries every non-key field
+/// optionally, so a caller names only what it means to change.
+///
+/// Returns `200 OK` with the updated record as JSON, `400 Bad Request` if the body sets no
+/// field at all, or `404 Not Found` if the key matches no row.
+///
+/// # Why an empty body is a `400`
+///
+/// An update whose `SET` list is built from the fields that are present has no statement to
+/// run when none of them are. Left to the implementation that is a SQL syntax error and a
+/// `500`; checked here it is one branch, before the pool is touched, for every implementor
+/// at once. The check runs before the key is looked up, so an empty body is a `400` whether
+/// or not the row exists.
+///
+/// # Clearing a nullable column
+///
+/// A field that is absent from the body is left alone; a nullable field explicitly set to
+/// `null` is cleared. Keeping those apart is the whole reason `macros::Update` emits
+/// `sql_traits::double_option` on nullable fields — a hand-written update type that omits
+/// it will silently treat `null` as "leave alone".
+///
+/// # Composite primary keys
+///
+/// A composite `PrimaryKey` is a tuple, so axum binds path segments **positionally, not by
+/// name**: the route's segment order must match the order of the `#[macros(primary_key)]`
+/// fields on the struct. Declaring them out of order compiles and runs, but updates the
+/// wrong row.
+#[async_trait]
+pub trait UpdateRoute: UpdateRecord + serde::Serialize
+where
+    <Self as HasPrimaryKey>::PrimaryKey: DeserializeOwned,
+    <Self as HasUpdateFields>::UpdateFields: DeserializeOwned + Send + 'static,
+{
+    // TODO: Add a function for logging
+    async fn update_route(
+        State(pool): State<PgPool>,
+        Path(primary_key): Path<<Self as HasPrimaryKey>::PrimaryKey>,
+        extract::Json(update_fields): extract::Json<<Self as HasUpdateFields>::UpdateFields>,
+    ) -> Response {
+        if update_fields.is_empty() {
+            return ApiErrorResponse::BadRequestWithMessage("Empty request body".to_string())
+                .into_response();
+        }
+
+        let result = Self::update_record(&pool, primary_key, update_fields)
+            .await
+            .map_err(ApiError::from);
+        optional_record_response(result, not_found)
     }
 }

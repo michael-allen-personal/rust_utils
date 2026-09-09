@@ -22,17 +22,22 @@
 use axum_helpers::async_trait::async_trait;
 use axum_helpers::axum::{
     Router,
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post, put},
 };
 use axum_helpers::sql_traits::{
-    BulkInsertSQL, DeleteRecordsWhere, DeleteSQL, GetLatestRecord, GetRecord, GetRecordWhere,
-    HasPrimaryKey, InsertSQL, ListRecords, ListRecordsWhere,
+    BulkInsertRecords, DeleteRecord, DeleteRecordsWhere, GetLatestRecord, GetRecord,
+    GetRecordWhere, HasPrimaryKey, HasRequestBody, HasUpdateFields, InsertRecord, ListRecords,
+    ListRecordsWhere, ReplaceRecord, UpdateFields, UpdateRecord,
 };
 use axum_helpers::sqlx::{self, PgPool};
 use axum_helpers::{
     BulkCreateRoute, CreateRoute, DeleteRecordsWhereRoute, DeleteRoute, GetLatestRoute,
-    GetRecordRoute, GetRecordWhereRoute, ListRecordsRoute, ListRecordsWhereRoute,
+    GetRecordRoute, GetRecordWhereRoute, ListRecordsRoute, ListRecordsWhereRoute, ReplaceRoute,
+    UpdateRoute,
 };
+
+/// The primary key the fixtures treat as matching no row.
+const MISSING_ID: i64 = 404;
 
 #[derive(axum_helpers::serde::Serialize, axum_helpers::serde::Deserialize)]
 #[serde(crate = "axum_helpers::serde")]
@@ -53,6 +58,10 @@ struct GadgetFilter {
 
 impl HasPrimaryKey for Gadget {
     type PrimaryKey = i64;
+
+    fn primary_key(&self) -> <Self as HasPrimaryKey>::PrimaryKey {
+        self.id
+    }
 }
 
 #[async_trait]
@@ -84,14 +93,14 @@ impl GetRecordWhere<GadgetFilter> for Gadget {
 
 #[async_trait]
 impl ListRecords for Gadget {
-    async fn get_all(_pool: &PgPool) -> Result<Vec<Self>, sqlx::Error> {
+    async fn list_records(_pool: &PgPool) -> Result<Vec<Self>, sqlx::Error> {
         Ok(Vec::new())
     }
 }
 
 #[async_trait]
 impl ListRecordsWhere<GadgetFilter> for Gadget {
-    async fn get_records(
+    async fn list_records_where(
         _pool: &PgPool,
         _where_params: GadgetFilter,
     ) -> Result<Vec<Self>, sqlx::Error> {
@@ -100,17 +109,17 @@ impl ListRecordsWhere<GadgetFilter> for Gadget {
 }
 
 #[async_trait]
-impl InsertSQL for Gadget {
+impl InsertRecord for Gadget {
     type ReturnType = Gadget;
-    async fn insert_sql(self, _pool: &PgPool) -> Result<Self::ReturnType, sqlx::Error> {
+    async fn insert_record(self, _pool: &PgPool) -> Result<Self::ReturnType, sqlx::Error> {
         Ok(self)
     }
 }
 
 #[async_trait]
-impl BulkInsertSQL for Gadget {
+impl BulkInsertRecords for Gadget {
     type ReturnType = u64;
-    async fn bulk_insert_sql(
+    async fn bulk_insert_records(
         _pool: &PgPool,
         records: &[Self],
     ) -> Result<Self::ReturnType, sqlx::Error> {
@@ -119,9 +128,9 @@ impl BulkInsertSQL for Gadget {
 }
 
 #[async_trait]
-impl DeleteSQL for Gadget {
+impl DeleteRecord for Gadget {
     type ReturnType = ();
-    async fn delete_sql(
+    async fn delete_record(
         _pool: &PgPool,
         _primary_key: <Self as HasPrimaryKey>::PrimaryKey,
     ) -> Result<Self::ReturnType, sqlx::Error> {
@@ -129,7 +138,7 @@ impl DeleteSQL for Gadget {
     }
 }
 
-// A non-`()` `ReturnType` is the point of `DeleteRecordsWhere`: unlike `DeleteSQL`, whose
+// A non-`()` `ReturnType` is the point of `DeleteRecordsWhere`: unlike `DeleteRecord`, whose
 // route throws the value away and answers `204`, this one serializes it into a `200` body.
 #[async_trait]
 impl DeleteRecordsWhere<GadgetFilter> for Gadget {
@@ -141,6 +150,89 @@ impl DeleteRecordsWhere<GadgetFilter> for Gadget {
         Ok(0)
     }
 }
+
+/// The key-less body for `Gadget`. Written by hand rather than derived: this file's job is
+/// to exercise the route traits against hand-written impls. `tests/derive_macros.rs`
+/// covers the generated version.
+#[derive(axum_helpers::serde::Deserialize)]
+#[serde(crate = "axum_helpers::serde")]
+struct GadgetBody {
+    owner_id: i64,
+}
+
+impl HasRequestBody for Gadget {
+    type RequestBody = GadgetBody;
+    fn from_request_body(
+        body: GadgetBody,
+        primary_key: <Self as HasPrimaryKey>::PrimaryKey,
+    ) -> Self {
+        Gadget {
+            id: primary_key,
+            owner_id: body.owner_id,
+        }
+    }
+}
+
+// A key matching no row is `Ok(None)`, which the route turns into a `404`. Keying that
+// off a sentinel id lets one fixture cover both the found and the missing case.
+#[async_trait]
+impl ReplaceRecord for Gadget {
+    async fn replace_record(self, _pool: &PgPool) -> Result<Option<Self>, sqlx::Error> {
+        if self.id == MISSING_ID {
+            return Ok(None);
+        }
+        Ok(Some(self))
+    }
+}
+
+impl ReplaceRoute for Gadget {}
+
+/// `Gadget`'s non-key fields, each optional. Hand-written like `GadgetBody` above;
+/// `tests/derive_macros.rs` covers the generated version.
+#[derive(axum_helpers::serde::Deserialize)]
+#[serde(crate = "axum_helpers::serde")]
+struct GadgetUpdate {
+    #[serde(default)]
+    owner_id: Option<i64>,
+}
+
+impl HasUpdateFields for Gadget {
+    type UpdateFields = GadgetUpdate;
+
+    fn apply_update_fields(mut record: Self, fields: GadgetUpdate) -> Self {
+        if let Some(owner_id) = fields.owner_id {
+            record.owner_id = owner_id;
+        }
+        record
+    }
+}
+
+impl UpdateFields for GadgetUpdate {
+    type Record = Gadget;
+
+    fn is_empty(&self) -> bool {
+        self.owner_id.is_none()
+    }
+}
+
+#[async_trait]
+impl UpdateRecord for Gadget {
+    async fn update_record(
+        _pool: &PgPool,
+        primary_key: <Self as HasPrimaryKey>::PrimaryKey,
+        update_fields: <Self as HasUpdateFields>::UpdateFields,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        if primary_key == MISSING_ID {
+            return Ok(None);
+        }
+        Ok(Some(update_fields.apply(Gadget {
+            id: primary_key,
+            owner_id: 0,
+        })))
+    }
+}
+
+impl UpdateRoute for Gadget {}
 
 // --- Route trait impls. ---
 
@@ -171,6 +263,8 @@ fn build_router() -> Router<PgPool> {
         .route("/gadgets/{id}", get(Gadget::get_record_route))
         .route("/gadgets", get(Gadget::list_records_route))
         .route("/gadgets/{id}", delete(Gadget::delete_route))
+        .route("/gadgets/{id}", put(Gadget::replace_route))
+        .route("/gadgets/{id}", patch(Gadget::update_route))
         .route("/gadgets", post(Gadget::create_route))
         .route("/gadgets/bulk", post(Gadget::bulk_create_route))
         .route(

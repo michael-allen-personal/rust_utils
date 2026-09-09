@@ -18,6 +18,127 @@
   `accepts` matching, so aliases and case-insensitivity behave identically; the `String`
   overload moves the input into the error on failure instead of allocating a second copy
   of it
+- `sql_traits::HasRequestBody` and `sql_traits::RequestBody`: a pair of traits associating
+  a record with the request-body type holding every field except its primary key. The
+  record side is what route traits bind on; the body side makes the assembly reachable from
+  generic code holding only a body. `RequestBody::Record` is bound
+  `HasRequestBody<RequestBody = Self>`, so the pairing is mutual — a body can only name a
+  record that names it back, and the two sides cannot drift onto different types. That
+  bound also makes `with_key` a provided method: an implementor writes nothing but the
+  associated type
+- `#[derive(macros::Record)]`: a superset of `PrimaryKey` that also generates `{Name}Body`
+  from the fields *not* marked `#[macros(primary_key)]`, both association impls, and both
+  `From` conversions — `From<(PrimaryKey, Body)> for Record` and `From<Record> for Body`.
+  Together those two make `record -> (key, body) -> record` expressible as a single
+  round-trip assertion, which is the test that catches a field reassembled into the wrong
+  slot. Name the body type's derives with `#[macros(body_derive(...))]`: a derive macro
+  cannot see sibling `#[derive(...)]` attributes, since rustc strips them before it runs.
+  Every other attribute forwards to the body automatically, which is what keeps `serde` and
+  `ts-rs` renames from drifting between a record and its body. Named-field structs only.
+  A `#[macros(...)]` attribute that is not one of those two directives — a typo, a stray
+  comma, `body_derive` in a non-list form, or a directive on the wrong item — is a
+  `compile_error!` naming what was found and what is accepted, rather than being ignored.
+  Silence there was dangerous: a malformed `#[macros(primary_key,)]` used to demote the
+  field out of the key and *into* the generated body, leaking the key into the request body
+- `sql_traits::HasUpdateFields` and `sql_traits::UpdateFields`: a pair of traits associating
+  a record with the type holding a *partial* set of its non-key fields, mirroring
+  `HasRequestBody`/`RequestBody` exactly. `UpdateFields::Record` is bound
+  `HasUpdateFields<UpdateFields = Self>`, so the pairing is mutual and cannot drift, and
+  that bound makes `apply` a provided method — an implementor writes the associated type
+  and `is_empty`, nothing more. `apply` consumes the record and returns the updated one
+  rather than taking `&mut`, which keeps it chainable (`fields.apply(record)`) and matches
+  every other trait in the crate; none of them takes a mutable reference
+- `sql_traits::double_option`: the `deserialize_with` helper that keeps the three states of
+  a partial update apart over JSON. A plain derive on `Option<Option<T>>` collapses an
+  explicit `null` into the same `None` an absent key produces, which would silently turn
+  "clear this column" into "leave it alone". Public only because generated code has to name
+  it. `serde` is consequently a dependency of `sql_traits`, and is re-exported alongside
+  `sqlx` and `async_trait`
+- `#[derive(macros::Update)]`: generates `{Name}Update` from the fields *not* marked
+  `#[macros(primary_key)]`, each wrapped in one more `Option` than the record has — `String`
+  becomes `Option<String>`, `Option<i32>` becomes `Option<Option<i32>>` — plus both
+  association impls. Name its derives with `#[macros(update_derive(...))]`, the counterpart
+  to `body_derive`. A field whose type is syntactically `Option<..>` also gets
+  `#[serde(default, deserialize_with = "::sql_traits::double_option")]`, which is what makes
+  an explicit `null` clear the column. A type *alias* for `Option<T>` cannot be recognized —
+  no proc macro can resolve one — and such a field simply loses the ability to be cleared;
+  it is never a type error, because the generated field type is correct either way.
+  Designed to sit alongside `#[derive(macros::Record)]`, which is what supplies the
+  `HasPrimaryKey` impl that `HasUpdateFields` requires
+- `axum_helpers::UpdateRoute` and a matching derive: a `PATCH` handler taking the primary key
+  from the URL path and a partial body from JSON, returning `200 OK` with the updated record,
+  `400 Bad Request` if the body sets no field at all, or `404 Not Found` if the key matches
+  no row. The empty-body check runs before the pool is touched: an update whose `SET` list is
+  built from the fields that are present has no statement to run when none of them are, which
+  left to the implementation is a SQL syntax error and a `500`. It also runs before the key is
+  looked up, so an empty body is a `400` whether or not the row exists. Bundled into
+  `BasicCrudRoutes`, which now covers every CRUD operation
+- `crates/axum_helpers/tests/route_responses.rs`: response-code assertions for the route
+  handlers, as opposed to the compile-and-mount checks the other test crates do.
+  `PgPool::connect_lazy` builds a pool without opening a connection, so a handler can be
+  awaited and its status inspected without a database. This is what caught the replace
+  handler answering `200` with a `null` body for a missing row
+- `axum_helpers::ReplaceRoute` and a matching derive: a `PUT` handler taking the primary key
+  from the URL path and a key-less body from JSON, returning `200 OK` with the replaced
+  record. Because the body type has no key field, a generated OpenAPI schema omits the key
+  from the request body without being told to, while by default a client that sends one
+  anyway still succeeds — serde ignores unknown fields. That tolerance is serde's default,
+  not a guarantee: a record carrying `#[serde(deny_unknown_fields)]` forwards it to the
+  generated body, which then rejects a key-bearing payload with `422`. The attribute is
+  deliberately not stripped — an explicit opt-in to strictness is honoured. Bundled into
+  `BasicCrudRoutes`, which now covers every CRUD operation
+
+### Changed
+
+- **Breaking.** The SQL traits whose names did not match their methods are renamed:
+  `InsertSQL::insert_sql` to `InsertRecord::insert_record`, `BulkInsertSQL::bulk_insert_sql`
+  to `BulkInsertRecords::bulk_insert_records`, `DeleteSQL::delete_sql` to
+  `DeleteRecord::delete_record`, and the two list methods `ListRecords::get_all` and
+  `ListRecordsWhere::get_records` to `list_records` and `list_records_where`. Every trait in
+  `sql_traits` now pairs a `<Verb><Noun>` name with a method spelling the same words, which
+  `GetRecord`, `GetRecordWhere`, `GetLatestRecord`, `DeleteRecordsWhere`, `ReplaceRecord`, and
+  `UpdateRecord` already did — the `*SQL` suffix and the `get_*` list methods were the only
+  holdouts. Singular and plural now carry meaning as well: `InsertRecord` and `DeleteRecord`
+  address one row, `BulkInsertRecords` and `DeleteRecordsWhere` address many. Both halves of
+  the rename fail loudly at the use site — a stale `impl InsertSQL for T` gets "cannot find
+  trait", a stale `t.insert_sql(&pool)` gets "no method named `insert_sql`" — and no retired
+  name is reused, so nothing can silently rebind to a different trait
+- **Breaking.** `#[derive(BasicCrudRoutes)]` now emits `impl ReplaceRoute` and
+  `impl UpdateRoute` alongside the five route impls it already emitted, so the bundle covers
+  every CRUD operation rather than everything except update: create (`CreateRoute`,
+  `BulkCreateRoute`), read (`GetRecordRoute`, `ListRecordsRoute`), update (`ReplaceRoute`,
+  `UpdateRoute`), delete (`DeleteRoute`). Types deriving it today need `HasRequestBody`,
+  `ReplaceRecord`, `HasUpdateFields`, and `UpdateRecord` impls added — in practice by
+  deriving `Record` and `Update` alongside it, which supply the three association impls and
+  generate the body and update types the write routes take as request bodies. As with any
+  unmet supertrait, each missing one is an error on the generated impl naming the trait it
+  cannot find, not on the derive. `GetLatestRoute` stays excluded: "the most recent row" is a
+  domain-specific query rather than a CRUD operation, and bundling it would force every
+  deriving type to implement `GetLatestRecord`
+- **Breaking.** `sql_traits::ReplaceRecord::replace_record` returns `Result<Option<Self>, _>`
+  rather than `Result<Self, _>`, and `axum_helpers::ReplaceRoute` answers `404 Not Found`
+  when it gets `None` — the convention `GetRecordRoute` already followed. Previously a `PUT`
+  to a key matching no row forced the implementation to report `sqlx::Error::RowNotFound`,
+  which the error mapping turned into a `500`. Existing impls need `Ok(record)` changed to
+  `Ok(Some(record))`; the compiler names every one of them
+- **Breaking.** `sql_traits::UpdateRecord` takes `HasUpdateFields` as a supertrait instead of
+  declaring its own `type UpdateFields`, so the record/fields pair is the single source of
+  truth for what a partial update is and an implementation cannot pair a record with a fields
+  type that does not point back at it. Its return type gains the same `Option` as
+  `ReplaceRecord`, for the same reason. The trait was added earlier on this branch and has not
+  been released, so nothing downstream depends on the old shape
+- `#[macros(...)]` container directives are now routed by which derive reads them, rather than
+  each derive rejecting everything it does not consume. `Record` reads `body_derive` and steps
+  over `update_derive`; `Update` does the reverse; `PrimaryKey` reads neither but tolerates
+  `update_derive`, since `#[derive(PrimaryKey, Update)]` is a valid pairing. It still rejects
+  `body_derive`, which nothing on such a struct can ever read. A derive macro cannot see its
+  siblings, so this is the only way one struct can carry both lists. An unrecognized directive
+  is still a `compile_error!`, and a struct-level directive written on a field now names the
+  directive that was actually misplaced instead of listing every one it could have been
+- **Breaking.** The route derives emit impls bounded on the renamed traits, so a type deriving
+  `BasicCrudRoutes`, `CreateRoute`, `BulkCreateRoute`, or `DeleteRoute` needs its `InsertSQL`,
+  `BulkInsertSQL`, and `DeleteSQL` impls renamed to match. As with any unmet supertrait, the
+  error lands on the generated impl naming the trait it cannot find, not on the derive
 
 ## v0.7.0
 
