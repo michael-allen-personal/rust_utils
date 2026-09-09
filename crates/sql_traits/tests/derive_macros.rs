@@ -20,7 +20,8 @@ struct User {
     name: String,
 }
 
-// Composite primary key -> `PrimaryKey` is a tuple in declaration order.
+// Composite primary key -> `PrimaryKey` is a generated `MembershipPrimaryKey` struct,
+// one field per marked field. A struct rather than a tuple so a URL path binds it by name.
 #[derive(macros::PrimaryKey)]
 struct Membership {
     #[macros(primary_key)]
@@ -61,7 +62,10 @@ fn primary_key_derive_resolves_and_sets_associated_type() {
 
     // The generated associated types are what we expect.
     let _single: <User as sql_traits::HasPrimaryKey>::PrimaryKey = 1_i64;
-    let _composite: <Membership as sql_traits::HasPrimaryKey>::PrimaryKey = (1_i64, 2_i64);
+    let _composite: <Membership as sql_traits::HasPrimaryKey>::PrimaryKey = MembershipPrimaryKey {
+        user_id: 1,
+        group_id: 2,
+    };
 }
 
 #[test]
@@ -78,7 +82,13 @@ fn primary_key_reads_the_marked_fields_off_the_record() {
         user_id: 1,
         group_id: 2,
     };
-    assert_eq!(membership.primary_key(), (1_i64, 2_i64));
+    assert_eq!(
+        membership.primary_key(),
+        MembershipPrimaryKey {
+            user_id: 1,
+            group_id: 2,
+        }
+    );
 }
 
 #[test]
@@ -133,8 +143,8 @@ fn record_derive_also_implements_has_primary_key() {
     assert_eq!(sql_traits::HasPrimaryKey::primary_key(&product), 42_i64);
 }
 
-// Composite key, to prove the body strips every marked field and the tuple is rebuilt
-// in declaration order.
+// Composite key, to prove the body strips every marked field and the key struct is rebuilt
+// field for field.
 #[derive(Debug, Clone, PartialEq, macros::Record)]
 #[macros(body_derive(Debug, PartialEq))]
 struct Enrollment {
@@ -210,7 +220,13 @@ fn record_round_trips_a_composite_key() {
         grade: "A".to_string(),
     };
 
-    assert_eq!(original.primary_key(), (1_i64, 2_i64));
+    assert_eq!(
+        original.primary_key(),
+        EnrollmentPrimaryKey {
+            student_id: 1,
+            course_id: 2,
+        }
+    );
 
     let body = EnrollmentBody::from(original.clone());
     assert_eq!(
@@ -219,7 +235,47 @@ fn record_round_trips_a_composite_key() {
             grade: "A".to_string()
         }
     );
-    assert_eq!(Enrollment::from_request_body(body, (1, 2)), original);
+    assert_eq!(
+        Enrollment::from_request_body(
+            body,
+            EnrollmentPrimaryKey {
+                student_id: 1,
+                course_id: 2,
+            }
+        ),
+        original
+    );
+}
+
+/// The reason the key is a struct at all. A tuple deserializes positionally, so a source
+/// naming the two keys in the opposite order from the struct — which is exactly what a route
+/// like `/m/{group_id}/{user_id}` hands the extractor — silently swapped them. Named fields
+/// bind by name, so the order the values arrive in stops mattering.
+///
+/// `serde_json` stands in for axum's path deserializer here: both drive
+/// `Deserialize::deserialize` through `deserialize_struct`, and this crate has no reason to
+/// depend on `axum`. `axum_helpers/tests/route_responses.rs` makes the same assertion
+/// against a real HTTP request.
+#[test]
+fn a_composite_key_deserializes_by_field_name_not_by_position() {
+    let key: MembershipPrimaryKey =
+        serde_json::from_str(r#"{"group_id": 9, "user_id": 4}"#).expect("valid json");
+
+    assert_eq!(key.user_id, 4, "each value must land in the field it named");
+    assert_eq!(key.group_id, 9);
+}
+
+/// A route may capture segments that are not part of the key — `/orgs/{org_id}/m/{user_id}/{group_id}`
+/// is an ordinary nesting — so an unnamed extra must be ignored rather than rejected. That
+/// is serde's default, and the derive deliberately does not forward a
+/// `#[serde(deny_unknown_fields)]` from the record that would override it.
+#[test]
+fn a_composite_key_ignores_a_value_it_has_no_field_for() {
+    let key: MembershipPrimaryKey =
+        serde_json::from_str(r#"{"org_id": 1, "user_id": 4, "group_id": 9}"#).expect("valid json");
+
+    assert_eq!(key.user_id, 4);
+    assert_eq!(key.group_id, 9);
 }
 
 // --- `macros::Update` ---------------------------------------------------------------

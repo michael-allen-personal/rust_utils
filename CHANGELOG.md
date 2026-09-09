@@ -90,6 +90,33 @@
 
 ### Changed
 
+- **Breaking.** A composite primary key is now a generated `{Name}PrimaryKey` struct rather
+  than a tuple, so `axum::extract::Path` binds each URL segment **by name**. A tuple is
+  filled from the segments left to right with no name matching, so a route declaring them in
+  a different order from the `#[macros(primary_key)]` fields — say
+  `.route("/m/{group_id}/{user_id}", get(Membership::get_record_route))` on a
+  `Membership { user_id, group_id }` — compiled, mounted, and ran while addressing the wrong
+  row, with no error anywhere; `DeleteRoute` deleted it. Only the routes could see the
+  mistake, and only at runtime, and they had no way to report it. Segment order is now
+  irrelevant, a segment naming no key field is ignored (so a keyed route can nest under
+  unrelated segments), and a key field no segment names is a `400` from the extractor before
+  the handler runs. The struct takes the record's own visibility, each field keeps the
+  visibility it has on the record, and it always derives `Clone`, `Debug`, `PartialEq` and
+  `serde::Deserialize` — `Deserialize` is what every route trait bounds the key on, so it is
+  emitted rather than asked for. The record's own attributes are deliberately *not*
+  forwarded to it, unlike `{Name}Body` and `{Name}Update`: this type is addressed by path
+  segments rather than by JSON, so a `serde` rename meant for a request body has no business
+  renaming the segments a route must declare. A **single** marked field is unchanged —
+  `PrimaryKey` is still that field's own type, because a lone segment binds unambiguously
+  and `Path<i64>` accepts a route whatever it names it. Migrating a composite key means
+  replacing tuple access with field access: `let (a, b) = primary_key;` becomes
+  `primary_key.a` / `primary_key.b`, and a hand-written `impl GetRecord`/`DeleteRecord`/
+  `UpdateRecord` binding the tuple to SQL binds the named fields instead. The name
+  `{Name}PrimaryKey` is now reserved alongside `{Name}Body` and `{Name}Update`
+- **Breaking.** A composite primary key on a *tuple* struct is a compile error naming the
+  shape that works, rather than falling back to the old positional binding. Unnamed fields
+  give a path segment nothing to bind to, so it is the one place the bug above could not be
+  fixed. A single marked field on a tuple struct is unaffected
 - **Breaking.** The SQL traits whose names did not match their methods are renamed:
   `InsertSQL::insert_sql` to `InsertRecord::insert_record`, `BulkInsertSQL::bulk_insert_sql`
   to `BulkInsertRecords::bulk_insert_records`, `DeleteSQL::delete_sql` to

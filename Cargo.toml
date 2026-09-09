@@ -13,3 +13,4 @@ serde_json = "1.0"
 sql_traits = { path = "./crates/sql_traits" }
 sqlx = { version = "0.9", features = ["postgres"] }
 tokio = { version = "1", features = ["macros", "rt"] }
+tower = { version = "0.5", features = ["util"], default-features = false }

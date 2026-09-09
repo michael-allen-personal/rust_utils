@@ -312,3 +312,89 @@ fn the_derived_update_type_distinguishes_an_absent_field_from_an_explicit_null()
     assert!(!cleared.is_empty(), "an explicit null is a change");
     assert_eq!(cleared.apply(cog()).weight, None);
 }
+
+// --- Composite primary key ------------------------------------------------------------
+//
+// A composite key is a generated `{Name}PrimaryKey` struct rather than a tuple, so the
+// derive now emits a *type* as well as impls — and that type's `Deserialize` is reached
+// through `::sql_traits::serde`, a path this crate never names. It resolving here is the
+// assertion; `route_responses.rs` covers what the binding actually does at runtime.
+
+#[derive(
+    axum_helpers::serde::Serialize, macros::Record, macros::GetRecordRoute, macros::DeleteRoute,
+)]
+#[macros(body_derive(axum_helpers::serde::Deserialize))]
+#[serde(crate = "axum_helpers::serde")]
+struct Membership {
+    #[macros(primary_key)]
+    user_id: i64,
+    #[macros(primary_key)]
+    group_id: i64,
+    role: String,
+}
+
+#[async_trait]
+impl axum_helpers::sql_traits::GetRecord for Membership {
+    async fn get_record(
+        _pool: &PgPool,
+        _primary_key: <Self as axum_helpers::sql_traits::HasPrimaryKey>::PrimaryKey,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl axum_helpers::sql_traits::DeleteRecord for Membership {
+    type ReturnType = ();
+    async fn delete_record(
+        _pool: &PgPool,
+        _primary_key: <Self as axum_helpers::sql_traits::HasPrimaryKey>::PrimaryKey,
+    ) -> Result<Self::ReturnType, sqlx::Error> {
+        Ok(())
+    }
+}
+
+/// The segments are declared in the **opposite** order to the marked fields, which is the
+/// shape the tuple key got wrong. It is only a compile assertion here — the key struct
+/// satisfies axum's `Handler` bounds whatever the order — but writing it this way is what
+/// makes the ordering claim visible next to the code that relies on it.
+fn mount_composite_key() -> axum_helpers::axum::Router<PgPool> {
+    use axum_helpers::axum::routing::{delete, get};
+
+    axum_helpers::axum::Router::<PgPool>::new()
+        .route(
+            "/memberships/{group_id}/{user_id}",
+            get(Membership::get_record_route),
+        )
+        .route(
+            "/memberships/{group_id}/{user_id}",
+            delete(Membership::delete_route),
+        )
+}
+
+#[test]
+fn a_composite_key_route_mounts() {
+    let _ = mount_composite_key();
+}
+
+/// The key struct is a real type the derive introduces, so it can be named and built. Its
+/// fixed derive set is what makes this line compile: `PartialEq` and `Debug` for the
+/// comparison, and the fields carry the record's own visibility.
+#[test]
+fn the_generated_key_struct_is_constructible_and_comparable() {
+    use axum_helpers::sql_traits::HasPrimaryKey;
+
+    let membership = Membership {
+        user_id: 4,
+        group_id: 9,
+        role: "owner".to_string(),
+    };
+
+    assert_eq!(
+        membership.primary_key(),
+        MembershipPrimaryKey {
+            user_id: 4,
+            group_id: 9,
+        }
+    );
+}

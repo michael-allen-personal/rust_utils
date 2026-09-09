@@ -124,6 +124,7 @@ dependencies = [
  "sql_traits",
  "sqlx",
  "tokio",
+ "tower",
 ]
 
 [[package]]

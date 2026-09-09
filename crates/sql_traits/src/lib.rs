@@ -19,9 +19,13 @@ pub trait HasPrimaryKey {
 
     /// Returns this record's own primary key.
     ///
-    /// A composite key comes back as a tuple in the order the fields are marked, matching
-    /// `PrimaryKey`. The `macros::PrimaryKey` derive implements this by cloning the marked
-    /// fields, so on a derived impl those field types must be `Clone`.
+    /// A composite key comes back as a generated `{Name}PrimaryKey` struct with one field
+    /// per marked field, matching `PrimaryKey`. It is a struct rather than a tuple so that
+    /// `axum::extract::Path` binds each URL segment by name: a tuple binds them by
+    /// position, which silently addresses the wrong row whenever a route declares its
+    /// segments in a different order from the marked fields. The `macros::PrimaryKey`
+    /// derive implements this by cloning the marked fields, so on a derived impl those
+    /// field types must be `Clone`.
     fn primary_key(&self) -> Self::PrimaryKey;
 }
 
