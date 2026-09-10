@@ -296,3 +296,62 @@ async fn a_misspelled_segment_is_rejected_rather_than_guessed_at() {
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+// --- Pagination limit errors -----------------------------------------------------------
+//
+// The limit check is the only error this crate raises that carries data, so it is the only
+// one whose message can be wrong while its status is right. Both are asserted.
+
+/// A narrow error widens into `ApiError` with `?`, which is the reason it is a subset rather
+/// than an inline variant: `validate` returns only what it can actually produce.
+#[test]
+fn a_request_error_widens_into_an_api_error() {
+    /// Shaped like a real handler: the narrow error is raised with `?` and the signature
+    /// widens it, which is the only thing being asserted.
+    fn widen(limit: u16) -> Result<(), axum_helpers::ApiError> {
+        if limit > 100 {
+            Err(axum_helpers::RequestError::InvalidPaginationLimit {
+                requested: limit,
+                max: 100,
+            })?;
+        }
+        Ok(())
+    }
+
+    assert!(widen(100).is_ok(), "the maximum itself is not an error");
+    assert!(matches!(
+        widen(500),
+        Err(axum_helpers::ApiError::InvalidPaginationLimit {
+            requested: 500,
+            max: 100
+        })
+    ));
+}
+
+#[tokio::test]
+async fn an_invalid_limit_answers_400_naming_the_maximum_and_the_request() {
+    use axum_helpers::axum::body::to_bytes;
+    use axum_helpers::axum::response::IntoResponse;
+
+    let response = axum_helpers::ApiError::InvalidPaginationLimit {
+        requested: 500,
+        max: 100,
+    }
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("a complete body");
+    let body = String::from_utf8(bytes.to_vec()).expect("utf-8");
+
+    assert!(
+        body.contains("100") && body.contains("500"),
+        "the message must name both the maximum and what was asked for, got {body}"
+    );
+    assert!(
+        body.starts_with(r#"{"message":"#),
+        "every error body in this crate is a message object, got {body}"
+    );
+}

@@ -11,10 +11,22 @@ pub type Result<T, E = ApiError> = std::result::Result<T, E>;
 error_set! {
     ApiError := {
         NotFoundError,
-    } || IOError
+    } || IOError || RequestError
     IOError := {
         Serde(serde_json::Error),
         Sql(sqlx::Error),
+    }
+    /// Errors caused by what the client sent, as opposed to anything that went wrong
+    /// serving it. A subset rather than inline variants so a validation function can
+    /// return only what it can actually produce and widen into [`ApiError`] with `?`.
+    ///
+    /// `PartialEq` is derivable here and not on `ApiError`, whose `sqlx` and `serde_json`
+    /// sources are not comparable; it is what lets a validation result be asserted with
+    /// `assert_eq!` rather than `matches!`.
+    #[derive(PartialEq, Eq)]
+    RequestError := {
+        #[display("`limit` must be between 1 and {max}, got {requested}")]
+        InvalidPaginationLimit { requested: u16, max: u16 },
     }
 }
 
@@ -39,6 +51,9 @@ impl From<ApiError> for ApiErrorResponse {
     fn from(value: ApiError) -> Self {
         match value {
             ApiError::NotFoundError => ApiErrorResponse::NotFound,
+            ApiError::InvalidPaginationLimit { .. } => {
+                ApiErrorResponse::BadRequestWithMessage(value.to_string())
+            }
             // TODO: Figure out a better way to differentiate serialization vs deserialization, as
             // a deserialization error should throw a 400 and a serialization error should throw a
             // 500
