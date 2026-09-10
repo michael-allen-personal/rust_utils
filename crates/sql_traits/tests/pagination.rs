@@ -114,3 +114,84 @@ fn the_last_page_has_no_next_cursor() {
 
     assert_eq!(json, r#"{"data":[],"pagination":{"limit":20,"next":null}}"#);
 }
+
+// --- The traits, from a consumer's vantage point -------------------------------------
+//
+// Implementing them is the assertion. This crate has no async runtime in its
+// dev-dependencies and does not need one: what can go wrong here is a signature that cannot
+// be satisfied from outside, and that is a compile error, not a test failure.
+
+use sql_traits::async_trait::async_trait;
+use sql_traits::sqlx::{self, PgPool};
+use sql_traits::{CursorParams, ListRecordsPaginated, ListRecordsWherePaginated, OffsetParams};
+
+/// The filter a `*Where` implementation takes. Its contents do not matter here, which is why
+/// the field is never read.
+#[allow(dead_code)]
+struct WidgetFilter {
+    owner_id: i64,
+}
+
+#[async_trait]
+impl ListRecordsPaginated<OffsetParams> for Widget {
+    async fn list_records_paginated(
+        _pool: &PgPool,
+        params: OffsetParams,
+    ) -> Result<Page<Self, OffsetPagination>, sqlx::Error> {
+        Ok(Page {
+            data: Vec::new(),
+            pagination: OffsetPagination {
+                offset: params.offset,
+                limit: params.limit,
+                total: params.include_total.then_some(0),
+            },
+        })
+    }
+}
+
+/// The same record type in the other mode, which is what makes the mode a type parameter
+/// rather than a second trait.
+#[async_trait]
+impl ListRecordsPaginated<CursorParams<i64>> for Widget {
+    async fn list_records_paginated(
+        _pool: &PgPool,
+        params: CursorParams<i64>,
+    ) -> Result<Page<Self, CursorPagination<i64>>, sqlx::Error> {
+        Ok(Page {
+            data: Vec::new(),
+            pagination: CursorPagination {
+                limit: params.limit,
+                next: None,
+            },
+        })
+    }
+}
+
+#[async_trait]
+impl ListRecordsWherePaginated<WidgetFilter, OffsetParams> for Widget {
+    async fn list_records_where_paginated(
+        _pool: &PgPool,
+        _where_params: WidgetFilter,
+        params: OffsetParams,
+    ) -> Result<Page<Self, OffsetPagination>, sqlx::Error> {
+        Ok(Page {
+            data: Vec::new(),
+            pagination: OffsetPagination {
+                offset: params.offset,
+                limit: params.limit,
+                total: None,
+            },
+        })
+    }
+}
+
+/// A where-clause assertion: this function is never called, and it compiles only if every
+/// impl above actually satisfies the trait it names.
+#[allow(dead_code)]
+fn the_paginated_traits_are_implementable_from_outside()
+where
+    Widget: ListRecordsPaginated<OffsetParams>
+        + ListRecordsPaginated<CursorParams<i64>>
+        + ListRecordsWherePaginated<WidgetFilter, OffsetParams>,
+{
+}

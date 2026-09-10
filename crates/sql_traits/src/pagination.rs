@@ -5,6 +5,9 @@
 //! see `axum_helpers::pagination`, which owns that policy, and the `ListRecordsPaginated`
 //! docs below for what an implementation is trusted to do.
 
+use ::async_trait::async_trait;
+use ::sqlx::PgPool;
+
 /// What a pagination mode contributes to a response.
 ///
 /// Implemented by the validated parameter types, which is what lets a single route handler
@@ -76,4 +79,68 @@ impl PaginationParams for OffsetParams {
 
 impl<C> PaginationParams for CursorParams<C> {
     type Pagination = CursorPagination<C>;
+}
+
+/// Retrieves one page of records of this type from the database.
+///
+/// The mode is the type parameter `P`: a record type offering both modes implements this
+/// twice, at [`OffsetParams`] and at [`CursorParams`]. [`ListRecords`](crate::ListRecords) is
+/// untouched and still returns every row.
+///
+/// # A cursor needs a total order
+///
+/// A cursor identifies a position in a sort, so the sort has to be total. `ORDER BY
+/// created_at` with ties both skips and duplicates rows across pages, because a tied row can
+/// fall on either side of the boundary between two queries. End the sort with a unique
+/// tiebreaker — the primary key will do — and encode the whole sort key in the cursor, not
+/// just its first column.
+///
+/// # Knowing whether another page exists
+///
+/// Fetch `limit + 1` rows, return the first `limit`, and set
+/// [`CursorPagination::next`] from the extra one if it came back. Any other approach either
+/// guesses or pays for a second count.
+///
+/// # `total` is opt-in
+///
+/// Fill [`OffsetPagination::total`] with `Some` if and only if
+/// [`OffsetParams::include_total`] is set, and leave it `None` otherwise. A caller that asked
+/// for it is paying for `count(*) OVER ()` over the whole filtered set, which a caller that
+/// did not ask must not be charged for. The compiler cannot enforce that "if and only if", so
+/// it is a contract.
+///
+/// # No limits are enforced here
+///
+/// `params.limit` has already been checked against a maximum by the time it arrives —
+/// `axum_helpers` owns that policy, and a direct non-HTTP caller is trusted to pass something
+/// sane. Do not second-guess it, and do not clamp it: a silently reduced page size is
+/// indistinguishable from a short last page.
+#[async_trait]
+pub trait ListRecordsPaginated<P>: Sized
+where
+    P: PaginationParams + Send,
+{
+    async fn list_records_paginated(
+        pool: &PgPool,
+        params: P,
+    ) -> Result<Page<Self, P::Pagination>, sqlx::Error>;
+}
+
+/// Retrieves one page of the records of this type matching the given filter.
+///
+/// Everything in [`ListRecordsPaginated`]'s documentation applies here too: the cursor's
+/// total order, the `limit + 1` fetch, the opt-in total, and the absence of any limit
+/// enforcement. The only difference is the filter, which narrows what is counted as well as
+/// what is returned.
+#[async_trait]
+pub trait ListRecordsWherePaginated<T, P>: Sized
+where
+    T: Send,
+    P: PaginationParams + Send,
+{
+    async fn list_records_where_paginated(
+        pool: &PgPool,
+        where_params: T,
+        params: P,
+    ) -> Result<Page<Self, P::Pagination>, sqlx::Error>;
 }
