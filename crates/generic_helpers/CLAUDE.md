@@ -11,6 +11,10 @@ additions applicable to more than one consumer — otherwise it belongs in the
 specific crate. Consumers pull this in for one small helper apiece, so anything
 heavy lands in their build for no benefit.
 
+Workspace-wide conventions — re-exporting leaked-type dependencies, absolute paths in
+macro output, tests as separate consumer crates — are in the root `CLAUDE.md`. What
+follows is what is specific to this crate.
+
 ## `MaxVecCapacity` and its derive
 
 The file helpers are re-exported at the crate root (`generic_helpers::MaxVecCapacity`),
@@ -72,6 +76,13 @@ aligned.
    it compiles fine in this crate and breaks for everyone else. `normalized_eq`
    lives behind `$crate::__private` for exactly this reason — it needs an
    absolute path to reach, without becoming public API.
+
+   Note the asymmetry with the file helpers: those are re-exported at the crate
+   root, while `ParsingError` stays at `generic_helpers::errors::ParsingError`.
+   The expansion names `$crate::errors::ParsingError`, so that module path is
+   load-bearing for `str_enum!` exactly as the root re-export is for the
+   `MaxVecCapacity` derive — renaming or nesting `errors` breaks every
+   `str_enum!` site.
 
 2. **Tests go in `tests/`, never `#[cfg(test)] mod tests`.** Files under `tests/`
    compile as separate crates linking this one externally, which is the only way
