@@ -122,9 +122,9 @@
   `InvalidPaginationLimit { requested, max }`, which is also therefore a new `ApiError` variant.
   `error_set!` generates a plain enum with no `#[non_exhaustive]`, so a consumer that matches
   `ApiError` exhaustively must add an arm or a wildcard. It is a subset rather than inline
-  variants so `PaginationQuery::validate` returns only the error it can actually produce and the
-  handler widens it with `?`; the status decision stays in the single `From<ApiError> for
-  ApiErrorResponse` match where every other status is made
+  variants so `PaginationQuery::validate` returns only the error it can actually produce, and
+  the handler converts it with `ApiError::from`; the status decision stays in the single
+  `From<ApiError> for ApiErrorResponse` match where every other status is made
 
 ### Changed
 

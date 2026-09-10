@@ -101,7 +101,7 @@ than a no-op.
 
 ## Tests
 
-Four crates under `tests/`, each proving something the others cannot:
+Five crates under `tests/`, each proving something the others cannot:
 
 - `derive_macros.rs` — the consumer-perspective compile test. It names neither `serde` nor
   `sqlx`, reaching them through this crate's re-exports, so building at all is the assertion
@@ -109,6 +109,11 @@ Four crates under `tests/`, each proving something the others cannot:
   checks, because a `deserialize_with` that resolves but is not actually attached would still
   compile and would still lose an explicit `null`.
 - `double_option.rs` — the three states, over real JSON.
+- `pagination.rs` — the envelope's JSON wire shape through this crate's own re-exported
+  `serde`: one outer shape for both modes, the cursor keeping its own JSON type rather than
+  being stringified. Also proves `ListRecordsPaginated` and `ListRecordsWherePaginated` are
+  implementable from outside the crate — a compile-time assertion, since this crate has no
+  async runtime in its dev-dependencies and the impls are never awaited.
 - `request_body_traits.rs` / `update_fields_traits.rs` — the pair contracts, including the
   `record -> (key, body) -> record` round trip that catches a field reassembled into the
   wrong slot.

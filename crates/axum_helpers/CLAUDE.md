@@ -10,7 +10,7 @@ trait, and so the supertrait list states the requirements — a missing `GetReco
 error on the route trait, not a mystery at the mount site.
 
 Every dependency whose types leak into these signatures is re-exported, `sql_traits`
-included; see the root `CLAUDE.md`. All three test crates reach `axum`, `serde`, `sqlx` and
+included; see the root `CLAUDE.md`. All four test crates reach `axum`, `serde`, `sqlx` and
 `sql_traits` *only* through those re-exports, so the re-export surface being sufficient to
 write a handler is itself under test.
 
@@ -109,18 +109,23 @@ cannot currently distinguish deserialization (a genuine `400`) from serializatio
 
 `RequestError` is the client-input subset: `InvalidPaginationLimit { requested, max }` today. It
 is a subset rather than inline `ApiError` variants so `PaginationQuery::validate` can return only
-what it can actually produce and widen with `?`. Note `UpdateRoute`'s empty-body `400` is still an
-inline `ApiErrorResponse` and is the standing exception to that.
+what it can actually produce; the handler converts it with `ApiError::from`. Note
+`UpdateRoute`'s empty-body `400` is still an inline `ApiErrorResponse` and is the standing
+exception to that.
 
 ## Tests
 
-Three crates, deliberately split by what they can prove:
+Four crates, deliberately split by what they can prove:
 
 - `derive_macros.rs` — the derives' output compiles and type-checks with only `axum_helpers`
   and `macros` in scope. Derived impls are checked whether or not they are used, so their
   existence forces every generated path to resolve. It has no `GetLatestRecord` impl on
   purpose: if `BasicCrudRoutes` started bundling `GetLatestRoute` again, this file would stop
   compiling.
+- `pagination_params.rs` — the query types in isolation, driven directly with
+  `Query::try_from_uri` rather than through a mounted handler. Its subject is the type: what a
+  URL deserializes into, what `Default` fills in, what `validate` rejects, and what `From`
+  hands to the SQL layer.
 - `route_traits.rs` — every handler mounted on a real `Router`. Implementing a route trait
   and mounting it are separate checks; `Router::route` is where axum's `Handler` requirements
   are actually enforced, and it is where the pre-v0.7.0 missing-`DeserializeOwned` bug
