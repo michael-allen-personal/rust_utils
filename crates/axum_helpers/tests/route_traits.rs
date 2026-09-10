@@ -303,9 +303,9 @@ impl axum_helpers::sql_traits::ListRecordsPaginated<axum_helpers::sql_traits::Cu
     }
 }
 
-impl ListRecordsPaginatedRoute<axum_helpers::OffsetParamsQuery> for Gadget {}
+impl ListRecordsPaginatedRoute<axum_helpers::DefaultOffsetParamsQuery> for Gadget {}
 
-impl ListRecordsPaginatedRoute<axum_helpers::CursorParamsQuery<i64>> for Gadget {}
+impl ListRecordsPaginatedRoute<axum_helpers::DefaultCursorParamsQuery<i64>> for Gadget {}
 
 #[async_trait]
 impl
@@ -333,7 +333,44 @@ impl
     }
 }
 
-impl ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::OffsetParamsQuery> for Gadget {
+impl ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::DefaultOffsetParamsQuery>
+    for Gadget
+{
+    type PathParams = GadgetFilter;
+}
+
+// The fourth combination: the filtered trait in cursor mode. Both route traits in both modes are
+// mounted below, because axum's `Handler` requirements are checked per monomorphization — a
+// `Router::route` that accepts the offset instantiation of this trait says nothing about the
+// cursor one.
+#[async_trait]
+impl
+    axum_helpers::sql_traits::ListRecordsWherePaginated<
+        GadgetFilter,
+        axum_helpers::sql_traits::CursorParams<i64>,
+    > for Gadget
+{
+    async fn list_records_where_paginated(
+        _pool: &PgPool,
+        _where_params: GadgetFilter,
+        params: axum_helpers::sql_traits::CursorParams<i64>,
+    ) -> Result<
+        axum_helpers::sql_traits::Page<Self, axum_helpers::sql_traits::CursorPagination<i64>>,
+        sqlx::Error,
+    > {
+        Ok(axum_helpers::sql_traits::Page {
+            data: Vec::new(),
+            pagination: axum_helpers::sql_traits::CursorPagination {
+                limit: params.limit,
+                next: None,
+            },
+        })
+    }
+}
+
+impl ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::DefaultCursorParamsQuery<i64>>
+    for Gadget
+{
     type PathParams = GadgetFilter;
 }
 
@@ -363,15 +400,19 @@ fn build_router() -> Router<PgPool> {
         )
         .route(
             "/gadgets/paged",
-            get(<Gadget as ListRecordsPaginatedRoute<axum_helpers::OffsetParamsQuery>>::list_records_paginated_route),
+            get(<Gadget as ListRecordsPaginatedRoute<axum_helpers::DefaultOffsetParamsQuery>>::list_records_paginated_route),
         )
         .route(
             "/gadgets/streamed",
-            get(<Gadget as ListRecordsPaginatedRoute<axum_helpers::CursorParamsQuery<i64>>>::list_records_paginated_route),
+            get(<Gadget as ListRecordsPaginatedRoute<axum_helpers::DefaultCursorParamsQuery<i64>>>::list_records_paginated_route),
         )
         .route(
             "/owners/{owner_id}/gadgets/paged",
-            get(<Gadget as ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::OffsetParamsQuery>>::list_records_where_paginated_route),
+            get(<Gadget as ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::DefaultOffsetParamsQuery>>::list_records_where_paginated_route),
+        )
+        .route(
+            "/owners/{owner_id}/gadgets/streamed",
+            get(<Gadget as ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::DefaultCursorParamsQuery<i64>>>::list_records_where_paginated_route),
         )
 }
 

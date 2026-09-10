@@ -75,6 +75,15 @@ could not have produced a total or a next cursor anyway.
 in. A consumer whose cursor is a row id pays nothing; `String` is for an impl that genuinely
 needs an opaque composite cursor. Opacity is the implementor's decision, not this crate's.
 
+**A malformed cursor is decoded in `C`, not in the impl.** `list_records_paginated` returns
+`Result<_, sqlx::Error>` and `axum_helpers` maps every `sqlx::Error` to a `500`, so an impl handed
+client-supplied garbage in an opaque cursor has no way to answer `400` — there is no error variant
+for it and adding one would put request validation in this crate. Put the decoding in the cursor
+type's own `Deserialize` instead: make the opaque cursor a type whose `Deserialize` base64-decodes
+and parses, rather than a bare `String` the impl unpacks later. A cursor that does not decode is
+then a query-string rejection, which `axum_helpers` renders as its `400` before the handler runs,
+and by the time `CursorParams<C>` reaches an impl the cursor is as validated as the limit is.
+
 Four things the doc comments carry, each a silent wrong answer rather than a compile error:
 
 - **A cursor needs a total order.** `ORDER BY created_at` with ties skips and duplicates rows
@@ -82,7 +91,10 @@ Four things the doc comments carry, each a silent wrong answer rather than a com
 - **`next` comes from fetching `limit + 1` and dropping the extra.** Anything else guesses or
   pays for a second count.
 - **`total` is `Some` if and only if `include_total`.** The compiler cannot enforce an iff, so
-  it is a contract, asserted in `axum_helpers/tests/route_responses.rs`.
+  it is a contract. It is exercised by the test fixture in
+  `axum_helpers/tests/route_responses.rs`, which is written to comply — that shows the envelope
+  carries the distinction, and says nothing about whether a consumer's impl honours it. Nothing
+  anywhere enforces it.
 - **No limits are enforced here.** Parameters arrive already validated; `axum_helpers` owns the
   policy and a direct non-HTTP caller is trusted. Do not clamp — a silently reduced page is
   indistinguishable from a short last page.

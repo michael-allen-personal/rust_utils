@@ -68,11 +68,26 @@ and the conversion into `sql_traits`' validated types is an infallible, total `F
 is stated once, in `Default`; the maximum is checked by `validate`, which needs no arguments
 because it reads the type. Nothing restates either.
 
+**Neither parameter has a default.** Both are always written, so the bare `OffsetParamsQuery` is
+spelled `DefaultOffsetParamsQuery` (50 / 200) and the cursor one `DefaultCursorParamsQuery<C>`.
+Parameter defaults made *partial* specification legal and silently wrong: `OffsetParamsQuery<10>`
+reads as "cap this route at 10" and meant a default of 10 with the inherited maximum of 200 — a
+route serving twenty times the intended page size, with nothing incoherent for
+`POLICY_IS_COHERENT` to catch. Same failure shape as the positional composite key, and rejected
+for the same reason.
+
 The parameters are positional, so a transposed pair is the failure worth catching, and
-`POLICY_IS_COHERENT` makes it a compile error. Every genuine transposition trips it, since it
+`POLICY_IS_COHERENT` makes it fail to build. Every genuine transposition trips it, since it
 makes the default exceed the maximum — the sole exception is `DEFAULT == MAX`, where transposing
-changes nothing. It is a post-monomorphization error, so the diagnostic points into the handler
-body with an instantiation chain back to the mount site.
+changes nothing. A zero default trips the companion assertion, which exists because `validate`
+rejects `limit == 0`: `<0, 100>` would otherwise make every parameter-less request a permanent
+`400`.
+
+It is a post-monomorphization error, so the diagnostic points into the handler body with an
+instantiation chain back to the mount site — and, for the same reason, **only a real build
+reports it.** `cargo build` and `cargo test` evaluate the constant; `cargo check` and an editor
+running it do not, so a transposed pair looks fine in the editor and fails in CI. This is the
+same reason the root `CLAUDE.md` says `cargo check` is not a substitute for `cargo test` here.
 
 **The container `serde` attribute names its path as a string.** `#[serde(default = "OffsetParamsQuery::<DEFAULT_LIMIT, MAX_LIMIT>::default")]`
 is not a style choice: a bare `#[serde(default)]` makes `serde_derive` add a `Self: Default`
@@ -86,12 +101,26 @@ Because the default arrives through `Default`, `limit` needs no `Option`: a requ
 limit deserializes straight to `DEFAULT_LIMIT`, and an explicit `?limit=0` still survives to be
 rejected.
 
+## The policy bounds page size, not depth
+
+There is deliberately no ceiling on `offset`. `?offset=4294967295` is a legal request and hands a
+very deep `OFFSET` to Postgres, which scans and discards every skipped row. `sql_traits` must not
+clamp — a silently reduced page is indistinguishable from a short last page, and the same argument
+covers a silently reduced offset — and an implementation's only error channel there is
+`sqlx::Error`, which is a `500`. A consumer who needs to bound depth does it in their own query
+(keyset pagination, or a rejection before the SQL runs), not here; cursor mode exists precisely
+because deep offsets are the problem it solves.
+
 ## Why the paginated routes extract a `Result<Query<Q>, QueryRejection>`
 
 A bare `Query<Q>` rejection renders as axum's plain-text default, which would make an
 unparseable `?limit=abc` the one error in this crate whose body is not `{"message": "..."}`.
 Extracting the `Result` moves that rendering into the handler, once, for every implementor —
 the same argument as the empty-update `400`.
+
+Both paginated handlers unwrap it through the private `validated_query`, which renders the
+rejection and runs `validate` in one place — the same role `optional_record_response` plays for
+the fetch-one handlers. A new paginated handler calls it rather than repeating the two branches.
 
 ## The `*Where` family has no derive
 

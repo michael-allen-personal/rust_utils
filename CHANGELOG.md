@@ -95,11 +95,18 @@
   response carries, which is what lets one route handler serve every mode — a total or a next
   cursor can only come from the query that fetched the rows, never from HTTP code afterwards.
   `CursorPagination<C>` is generic over the cursor so `next` goes back out as the type that came
-  in, and an implementor whose cursor is a row id allocates nothing in either direction. The doc
-  comments carry the four contracts the compiler cannot: a cursor needs a total order, `next`
-  comes from a `limit + 1` fetch, `total` is `Some` iff the request asked, and no limit is
-  enforced in this crate. `ListRecords` and `ListRecordsWhere<T>` are untouched — a consumer does
-  nothing unless it opts in
+  in, and an implementor whose cursor is a row id allocates nothing in either direction. `Page`,
+  `OffsetPagination` and `CursorPagination<C>` derive `Deserialize` as well as `Serialize`, so a
+  consumer writing a Rust client — or an integration test driving their own service over HTTP —
+  can parse the envelope back into the same types the handler sent, rather than hand-rolling a
+  mirror of it. Derived bounds apply only where they are used, so a record that is `Serialize`-only
+  still serves a page on the way out and costs nothing for the added derive. The doc comments carry
+  the four contracts the compiler cannot: a cursor needs a total order, `next` comes from a
+  `limit + 1` fetch, `total` is `Some` iff the request asked, and no limit is enforced in this
+  crate — and, for an impl whose cursor is opaque, that decoding belongs in the cursor type's own
+  `Deserialize`, where a malformed cursor becomes a query-string rejection and a `400` instead of
+  the `500` every `sqlx::Error` maps to. `ListRecords` and `ListRecordsWhere<T>` are untouched — a
+  consumer does nothing unless it opts in
 - `axum_helpers::ListRecordsPaginatedRoute<Q>` and
   `axum_helpers::ListRecordsWherePaginatedRoute<T, Q>`, with the query-string types
   `OffsetParamsQuery<DEFAULT_LIMIT, MAX_LIMIT>` and `CursorParamsQuery<C, DEFAULT_LIMIT, MAX_LIMIT>`
@@ -109,15 +116,28 @@
   every response is an envelope, empty pages included. The limit policy is const generic rather
   than a pair of associated consts because that keeps the query-to-params conversion an
   infallible, total `From` — the default limit is stated exactly once, in `Default`, and
-  `validate` reads the maximum off the type instead of having it threaded in. A transposed
-  `<DEFAULT, MAX>` pair is a compile error. `limit` is consequently a plain `u16` rather than an
-  `Option`: the container's `serde` default comes from *this type's* `Default`, so a type whose
-  maximum sits below the crate-wide default still serves a request that names no limit, which a
-  crate-wide serde default could not. That attribute has to name its path — a bare
-  `#[serde(default)]` panics `serde_derive` on a const-generic struct — which makes the struct
-  and const parameter names load-bearing, as `crates/axum_helpers/CLAUDE.md` records. The handlers
-  extract `Result<Query<Q>, QueryRejection>` so an unparseable query string answers
-  `{"message": "..."}` like every other error here instead of axum's plain-text default
+  `validate` reads the maximum off the type instead of having it threaded in. **Neither const
+  parameter has a default**, so both numbers are always written together, and the crate's own
+  policy arrives under a name: `DefaultOffsetParamsQuery` and `DefaultCursorParamsQuery<C>`, both
+  50 per page and 200 at most. Parameter defaults would make *partial* specification legal and
+  silently wrong — `OffsetParamsQuery<10>` reads as "cap this route at 10" and would mean a
+  default of 10 paired with the inherited maximum of 200, a route serving twenty times the
+  intended page size, with nothing incoherent for the policy assertion to catch. That is the same
+  positional-and-silently-wrong failure this workspace rejected tuple composite keys for, so the
+  named aliases are the only way to get the bare form. A transposed or zero-defaulted
+  `<DEFAULT, MAX>` pair fails to build, as a post-monomorphization error: `cargo build` and
+  `cargo test` report it, and `cargo check` — or an editor running it — does not, so it is caught
+  on a real build the way the rest of this workspace's generated-code failures are. `limit` is
+  consequently a plain `u16` rather than an `Option`: the container's `serde` default comes from
+  *this type's* `Default`, so a type whose maximum sits below the crate-wide default still serves
+  a request that names no limit, which a crate-wide serde default could not. That attribute has to
+  name its path — a bare `#[serde(default)]` panics `serde_derive` on a const-generic struct —
+  which makes the struct and const parameter names load-bearing, as
+  `crates/axum_helpers/CLAUDE.md` records; removing the parameter defaults does not change those
+  strings. The handlers extract `Result<Query<Q>, QueryRejection>` so an unparseable query string
+  answers `{"message": "..."}` like every other error here instead of axum's plain-text default.
+  The policy bounds page *size* only: there is deliberately no ceiling on `offset`, and a consumer
+  who needs to bound how deep a request may page does it in their own query
 - **Breaking.** `axum_helpers::RequestError`, a new `error_set!` subset holding
   `InvalidPaginationLimit { requested, max }`, which is also therefore a new `ApiError` variant.
   `error_set!` generates a plain enum with no `#[non_exhaustive]`, so a consumer that matches

@@ -29,8 +29,17 @@ pub trait PaginationQuery: Sized + Into<Self::Params> + DeserializeOwned + Send 
 /// Offset-based pagination parameters as they arrive on a URL.
 ///
 /// `DEFAULT_LIMIT` fills in for a request that names no limit; `MAX_LIMIT` is the largest a
-/// request may ask for. Write them in that order — a transposed pair is a compile error,
-/// since `DEFAULT_LIMIT` must not exceed `MAX_LIMIT`.
+/// request may ask for. Write them in that order — a transposed pair fails to build, since
+/// `DEFAULT_LIMIT` must not exceed `MAX_LIMIT`. That failure is a post-monomorphization error,
+/// so it is `cargo build` and `cargo test` that surface it; `cargo check` (and an editor
+/// running it) passes a transposed pair.
+///
+/// **Neither parameter has a default, so both are always written.** A default on `MAX_LIMIT`
+/// would make partial specification legal and silently wrong: `OffsetParamsQuery<10>` reads as
+/// "cap this route at 10" and would mean a default of 10 with the crate's maximum of 200 — an
+/// intended maximum paired with the wrong default, serving twenty times the page size meant,
+/// with nothing incoherent for the policy assertion to catch. The bare form is available as
+/// [`DefaultOffsetParamsQuery`], which names the policy it carries.
 ///
 /// Every missing field comes from [`Default`], so `limit` needs no `Option`: a request naming
 /// no limit deserializes straight to `DEFAULT_LIMIT`. The container attribute has to name that
@@ -38,7 +47,7 @@ pub trait PaginationQuery: Sized + Into<Self::Params> + DeserializeOwned + Send 
 /// const-generic struct.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(default = "OffsetParamsQuery::<DEFAULT_LIMIT, MAX_LIMIT>::default")]
-pub struct OffsetParamsQuery<const DEFAULT_LIMIT: u16 = 50, const MAX_LIMIT: u16 = 200> {
+pub struct OffsetParamsQuery<const DEFAULT_LIMIT: u16, const MAX_LIMIT: u16> {
     /// How many records to return.
     pub limit: u16,
     /// How many records to skip.
@@ -50,28 +59,64 @@ pub struct OffsetParamsQuery<const DEFAULT_LIMIT: u16 = 50, const MAX_LIMIT: u16
 /// Cursor-based pagination parameters as they arrive on a URL.
 ///
 /// `C` is the cursor's own type, so an implementor whose cursor is a row id writes
-/// `CursorParamsQuery<i64>` and allocates nothing, while one needing an opaque composite
-/// cursor writes `CursorParamsQuery<String>`. Cursor opacity is the implementor's decision.
+/// `CursorParamsQuery<i64, 50, 200>` and allocates nothing, while one needing an opaque
+/// composite cursor writes `CursorParamsQuery<String, 50, 200>`. Cursor opacity is the
+/// implementor's decision.
 ///
-/// The const parameters mean exactly what they do on [`OffsetParamsQuery`].
+/// `C` must be `Serialize` as well as `Deserialize`, even though only the latter is bounded
+/// here. The route traits bound the mode's metadata `Serialize`, and a cursor's metadata is
+/// `CursorPagination<C>` — `next` goes back out as the type that came in, so a cursor type that
+/// cannot serialize fails at the route-trait impl rather than here.
+///
+/// # A malformed cursor is the cursor type's own `400`
+///
+/// `ListRecordsPaginated` returns `Result<_, sqlx::Error>` and every `sqlx::Error` becomes a
+/// `500`, so an implementation handed client-supplied garbage has no channel for "this cursor is
+/// not a cursor". Decode inside `C`'s own `Deserialize` instead: make the opaque cursor a type
+/// whose `Deserialize` does the base64-and-parse and fails on anything else, rather than a bare
+/// `String` the implementation decodes later. A cursor that does not decode is then a
+/// `QueryRejection`, which reaches the client as this crate's `400` before the handler runs —
+/// the same path an unparseable `?limit=abc` takes.
+///
+/// The const parameters mean exactly what they do on [`OffsetParamsQuery`], defaults included:
+/// there are none, so both are always written, for the reason given there. The bare form is
+/// available as [`DefaultCursorParamsQuery`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(default = "CursorParamsQuery::<C, DEFAULT_LIMIT, MAX_LIMIT>::default")]
-pub struct CursorParamsQuery<C, const DEFAULT_LIMIT: u16 = 50, const MAX_LIMIT: u16 = 200> {
+pub struct CursorParamsQuery<C, const DEFAULT_LIMIT: u16, const MAX_LIMIT: u16> {
     /// How many records to return.
     pub limit: u16,
     /// Where to resume from, and `None` for the first page.
     pub cursor: Option<C>,
 }
 
-/// Catches an incoherent limit policy at compile time. The const parameters are positional, so
+/// [`OffsetParamsQuery`] with this crate's default policy: 50 records per page, 200 at most.
+///
+/// The query types take no parameter defaults, so this alias is how the bare form is written.
+/// A route wanting a different policy names both numbers itself —
+/// `OffsetParamsQuery<20, 100>` — rather than overriding one of them.
+pub type DefaultOffsetParamsQuery = OffsetParamsQuery<50, 200>;
+
+/// [`CursorParamsQuery`] with this crate's default policy: 50 records per page, 200 at most.
+///
+/// The cursor type `C` stays a parameter, since no default could be right for it; only the limit
+/// policy is fixed. A route wanting a different policy names both numbers itself —
+/// `CursorParamsQuery<i64, 20, 100>`.
+pub type DefaultCursorParamsQuery<C> = CursorParamsQuery<C, 50, 200>;
+
+/// Catches an incoherent limit policy at build time. The const parameters are positional, so
 /// the failure worth catching is a transposed pair: every genuine transposition makes the default
 /// exceed the maximum, except `DEFAULT_LIMIT == MAX_LIMIT`, where transposing changes nothing.
+/// A zero default is the other incoherence, and the one `validate` would otherwise turn into a
+/// permanent `400` for every parameter-less request.
 ///
 /// Shared by both query types rather than written twice, because the check concerns only the limit
 /// parameters, which both carry identically. Reached through each type's `POLICY_IS_COHERENT`,
-/// whose evaluation is what makes a bad pair a compile error.
+/// whose evaluation is what makes a bad pair fail to build. Post-monomorphization, so it takes
+/// `cargo build` or `cargo test` — `cargo check` never evaluates the constant.
 const fn assert_policy_coherent(default_limit: u16, max_limit: u16) {
     assert!(max_limit >= 1, "MAX_LIMIT must be at least 1");
+    assert!(default_limit >= 1, "DEFAULT_LIMIT must be at least 1");
     assert!(
         default_limit <= max_limit,
         "DEFAULT_LIMIT exceeds MAX_LIMIT — are the parameters transposed?"
@@ -97,8 +142,10 @@ impl<const DEFAULT_LIMIT: u16, const MAX_LIMIT: u16> OffsetParamsQuery<DEFAULT_L
     /// The largest limit a request may ask for.
     pub const MAX_LIMIT: u16 = MAX_LIMIT;
 
-    /// Evaluated by [`PaginationQuery::validate`], which is what makes a transposed parameter
-    /// pair a compile error rather than a runtime surprise.
+    /// Evaluated by [`PaginationQuery::validate`], which is what makes a transposed or zero
+    /// parameter pair fail to build rather than be a runtime surprise. Because the evaluation is
+    /// post-monomorphization it takes a real build — `cargo build` or `cargo test` reports it,
+    /// `cargo check` and an editor running it do not.
     const POLICY_IS_COHERENT: () = assert_policy_coherent(DEFAULT_LIMIT, MAX_LIMIT);
 }
 
@@ -110,7 +157,8 @@ impl<C, const DEFAULT_LIMIT: u16, const MAX_LIMIT: u16>
     /// The largest limit a request may ask for.
     pub const MAX_LIMIT: u16 = MAX_LIMIT;
 
-    /// See [`OffsetParamsQuery::POLICY_IS_COHERENT`]; the limit parameters mean the same here.
+    /// See [`OffsetParamsQuery::POLICY_IS_COHERENT`]; the limit parameters mean the same here,
+    /// and so does needing a real build rather than a `cargo check` to report a bad pair.
     const POLICY_IS_COHERENT: () = assert_policy_coherent(DEFAULT_LIMIT, MAX_LIMIT);
 }
 

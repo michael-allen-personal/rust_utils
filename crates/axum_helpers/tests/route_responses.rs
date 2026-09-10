@@ -495,10 +495,18 @@ async fn a_limit_of_zero_is_rejected() {
     assert!(body.starts_with(r#"{"message":"#), "got {body}");
 }
 
+/// The body is asserted here, not just the status: a handler answering a bare
+/// `ApiErrorResponse::BadRequest` would satisfy the status alone, and a caller told only "bad
+/// request" cannot tell what limit it should have asked for. The numbers are what close the loop
+/// from the URL through `validate` to the rendered message.
 #[tokio::test]
 async fn a_limit_above_the_maximum_is_rejected_and_the_maximum_is_inclusive() {
-    let (over, _) = paged("/widgets?limit=26").await;
+    let (over, body) = paged("/widgets?limit=26").await;
     assert_eq!(over, StatusCode::BAD_REQUEST);
+    assert!(
+        body.contains("26") && body.contains("25"),
+        "the message must name what was asked for and this route's maximum, got {body}"
+    );
 
     let (at, _) = paged("/widgets?limit=25").await;
     assert_eq!(at, StatusCode::OK, "the maximum itself must be allowed");

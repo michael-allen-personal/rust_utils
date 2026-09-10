@@ -41,6 +41,28 @@ fn not_found() -> Response {
     ApiError::NotFoundError.into_response()
 }
 
+/// Unwraps a paginated route's query extractor: axum's own rejection and an out-of-range limit
+/// both become this crate's `{"message": …}` body, in one place for every implementor.
+///
+/// A bare `Query<Q>` would render its rejection as axum's plain-text default, which would make an
+/// unparseable `?limit=abc` the one error here whose body is not a message object.
+///
+/// The `Err` is a `Response` because that is what a handler returns; `clippy::result_large_err`
+/// fires on its size, and boxing it would only move the allocation into the error path of every
+/// caller that immediately returns it.
+#[allow(clippy::result_large_err)]
+fn validated_query<Q: PaginationQuery>(
+    query: Result<Query<Q>, QueryRejection>,
+) -> Result<Q, Response> {
+    let Query(params) = query.map_err(|rejection| {
+        ApiErrorResponse::BadRequestWithMessage(rejection.body_text()).into_response()
+    })?;
+    params
+        .validate()
+        .map_err(|error| ApiError::from(error).into_response())?;
+    Ok(params)
+}
+
 /// Axum route handler for fetching the most recent record.
 ///
 /// Returns `200 OK` with the record as JSON, or `204 No Content` if none exists.
@@ -120,12 +142,13 @@ pub trait ListRecordsRoute: ListRecords + serde::Serialize {
 /// Returns `200 OK` with `{"data": [...], "pagination": {...}}`, or `400 Bad Request` if the
 /// query string is unparseable or asks for a limit outside the range `Q` allows.
 ///
-/// The pagination mode is `Q`: `OffsetParamsQuery` or `CursorParamsQuery<C>`, each carrying its
-/// own default and maximum limit as const parameters. A mount site names it, which is also
-/// where the policy is visible:
+/// The pagination mode is `Q`: `OffsetParamsQuery<..>` or `CursorParamsQuery<C, ..>`, each
+/// carrying its own default and maximum limit as const parameters. Neither takes a parameter
+/// default, so both numbers are always written; the crate's own policy has a name. A mount site
+/// names the mode, which is also where the policy is visible:
 ///
 /// ```ignore
-/// impl ListRecordsPaginatedRoute<OffsetParamsQuery> for Widget {}            // 50 / 200
+/// impl ListRecordsPaginatedRoute<DefaultOffsetParamsQuery> for Widget {}     // 50 / 200
 /// impl ListRecordsPaginatedRoute<OffsetParamsQuery<20, 100>> for Invoice {}  // tuned
 /// ```
 ///
@@ -147,7 +170,7 @@ pub trait ListRecordsRoute: ListRecords + serde::Serialize {
 ///
 /// A type may implement this trait for an offset query type *and* a cursor one. Both impls then
 /// carry the same provided-method name, so a mount site disambiguates:
-/// `<Widget as ListRecordsPaginatedRoute<OffsetParamsQuery>>::list_records_paginated_route`.
+/// `<Widget as ListRecordsPaginatedRoute<DefaultOffsetParamsQuery>>::list_records_paginated_route`.
 /// That is the existing situation for the `*Where` family, not a new one.
 #[async_trait]
 pub trait ListRecordsPaginatedRoute<Q>: ListRecordsPaginated<Q::Params> + serde::Serialize
@@ -160,19 +183,12 @@ where
         State(pool): State<PgPool>,
         query: Result<Query<Q>, QueryRejection>,
     ) -> Response {
-        let Query(query) = match query {
-            Ok(query) => query,
-            Err(rejection) => {
-                return ApiErrorResponse::BadRequestWithMessage(rejection.body_text())
-                    .into_response();
-            }
+        let params = match validated_query(query) {
+            Ok(params) => params,
+            Err(response) => return response,
         };
 
-        if let Err(error) = query.validate() {
-            return ApiError::from(error).into_response();
-        }
-
-        Self::list_records_paginated(&pool, query.into())
+        Self::list_records_paginated(&pool, params.into())
             .await
             .map_err(ApiError::from)
             .map(|page| (StatusCode::OK, response::Json(page)))
@@ -226,19 +242,12 @@ where
         Path(path_params): Path<Self::PathParams>,
         query: Result<Query<Q>, QueryRejection>,
     ) -> Response {
-        let Query(query) = match query {
-            Ok(query) => query,
-            Err(rejection) => {
-                return ApiErrorResponse::BadRequestWithMessage(rejection.body_text())
-                    .into_response();
-            }
+        let params = match validated_query(query) {
+            Ok(params) => params,
+            Err(response) => return response,
         };
 
-        if let Err(error) = query.validate() {
-            return ApiError::from(error).into_response();
-        }
-
-        Self::list_records_where_paginated(&pool, path_params.into(), query.into())
+        Self::list_records_where_paginated(&pool, path_params.into(), params.into())
             .await
             .map_err(ApiError::from)
             .map(|page| (StatusCode::OK, response::Json(page)))

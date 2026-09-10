@@ -23,7 +23,11 @@ pub trait PaginationParams {
 /// One envelope for every mode, with `M` varying, so a client reads `data` the same way no
 /// matter which mode produced it. A paginated route always answers this, including for an
 /// empty page — there is no shape that is sometimes an array and sometimes an object.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+///
+/// `Deserialize` as well as `Serialize`, so a Rust client or an integration test can parse a
+/// response back into the same envelope the service sent. Derived bounds apply only where they
+/// are used, so a record that is `Serialize`-only still serves this on the way out.
+#[derive(Debug, Clone, PartialEq, Eq, ::serde::Serialize, ::serde::Deserialize)]
 pub struct Page<T, M> {
     /// The records in this page.
     pub data: Vec<T>,
@@ -43,7 +47,7 @@ pub struct OffsetParams {
 }
 
 /// Offset-based response metadata.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ::serde::Serialize, ::serde::Deserialize)]
 pub struct OffsetPagination {
     /// The offset this page starts at.
     pub offset: u32,
@@ -64,7 +68,7 @@ pub struct CursorParams<C> {
 }
 
 /// Cursor-based response metadata.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, ::serde::Serialize, ::serde::Deserialize)]
 pub struct CursorPagination<C> {
     /// The limit this page was built with.
     pub limit: u16,
