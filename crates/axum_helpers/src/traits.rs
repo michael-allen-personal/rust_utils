@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use axum::{
-    extract::{self, Path, State},
+    extract::{self, Path, Query, State, rejection::QueryRejection},
     http::StatusCode,
     response::{self, IntoResponse, Response},
 };
@@ -10,10 +10,11 @@ use sqlx::PgPool;
 use sql_traits::{
     BulkInsertRecords, DeleteRecord, DeleteRecordsWhere, GetLatestRecord, GetRecord,
     GetRecordWhere, HasPrimaryKey, HasRequestBody, HasUpdateFields, InsertRecord, ListRecords,
-    ListRecordsWhere, ReplaceRecord, UpdateFields, UpdateRecord,
+    ListRecordsPaginated, ListRecordsWhere, PaginationParams, ReplaceRecord, UpdateFields,
+    UpdateRecord,
 };
 
-use crate::{ApiError, ApiErrorResponse};
+use crate::{ApiError, ApiErrorResponse, PaginationQuery};
 
 /// Renders the `Result<Option<Record>, ApiError>` shape shared by every fetch-one route
 /// handler: `200 OK` with the record as JSON, `on_missing()` when the query matched no row,
@@ -110,6 +111,71 @@ pub trait ListRecordsRoute: ListRecords + serde::Serialize {
             .await
             .map_err(ApiError::from)
             .map(|records| (StatusCode::OK, response::Json(records)))
+            .into_response()
+    }
+}
+
+/// Axum route handler for listing one page of records.
+///
+/// Returns `200 OK` with `{"data": [...], "pagination": {...}}`, or `400 Bad Request` if the
+/// query string is unparseable or asks for a limit outside the range `Q` allows.
+///
+/// The pagination mode is `Q`: `OffsetParamsQuery` or `CursorParamsQuery<C>`, each carrying its
+/// own default and maximum limit as const parameters. A mount site names it, which is also
+/// where the policy is visible:
+///
+/// ```ignore
+/// impl ListRecordsPaginatedRoute<OffsetParamsQuery> for Widget {}            // 50 / 200
+/// impl ListRecordsPaginatedRoute<OffsetParamsQuery<20, 100>> for Invoice {}  // tuned
+/// ```
+///
+/// # Always an envelope, never a bare array
+///
+/// [`ListRecordsRoute`] answers a JSON array and is unaffected by this trait. A type opts into
+/// pagination by naming this one instead, and then every response is an envelope — including an
+/// empty page, which is `200` with an empty `data`, never a `204`. Nothing branches on whether
+/// the request carried pagination parameters.
+///
+/// # Why the query extractor is a `Result`
+///
+/// A bare `Query<Q>` rejection renders as axum's default plain-text body, which would make an
+/// unparseable `?limit=abc` the one error in this crate that is not `{"message": "..."}`.
+/// Extracting `Result<Query<Q>, QueryRejection>` moves that rendering here, once, for every
+/// implementor.
+///
+/// # Both modes on one type
+///
+/// A type may implement this trait for an offset query type *and* a cursor one. Both impls then
+/// carry the same provided-method name, so a mount site disambiguates:
+/// `<Widget as ListRecordsPaginatedRoute<OffsetParamsQuery>>::list_records_paginated_route`.
+/// That is the existing situation for the `*Where` family, not a new one.
+#[async_trait]
+pub trait ListRecordsPaginatedRoute<Q>: ListRecordsPaginated<Q::Params> + serde::Serialize
+where
+    Q: PaginationQuery,
+    <Q::Params as PaginationParams>::Pagination: serde::Serialize,
+{
+    // TODO: Add a function for logging
+    async fn list_records_paginated_route(
+        State(pool): State<PgPool>,
+        query: Result<Query<Q>, QueryRejection>,
+    ) -> Response {
+        let Query(query) = match query {
+            Ok(query) => query,
+            Err(rejection) => {
+                return ApiErrorResponse::BadRequestWithMessage(rejection.body_text())
+                    .into_response();
+            }
+        };
+
+        if let Err(error) = query.validate() {
+            return ApiError::from(error).into_response();
+        }
+
+        Self::list_records_paginated(&pool, query.into())
+            .await
+            .map_err(ApiError::from)
+            .map(|page| (StatusCode::OK, response::Json(page)))
             .into_response()
     }
 }

@@ -355,3 +355,178 @@ async fn an_invalid_limit_answers_400_naming_the_maximum_and_the_request() {
         "every error body in this crate is a message object, got {body}"
     );
 }
+
+// --- Paginated list responses ----------------------------------------------------------
+//
+// Driven through a real `Router`, because a query string only exists in a real request: a
+// handler called directly takes a `Query` built by hand, which proves nothing about what a URL
+// deserializes into.
+
+/// The offset past which the fixture reports an empty page, so an empty result can be driven
+/// through a real request.
+const PAST_THE_END: u32 = 1000;
+
+/// Echoes the parameters it received into the data, so the response body says exactly what
+/// reached the SQL layer. Cheaper and clearer than giving the fixture interior mutability.
+#[async_trait]
+impl axum_helpers::sql_traits::ListRecordsPaginated<axum_helpers::sql_traits::OffsetParams>
+    for Widget
+{
+    async fn list_records_paginated(
+        _pool: &PgPool,
+        params: axum_helpers::sql_traits::OffsetParams,
+    ) -> Result<
+        axum_helpers::sql_traits::Page<Self, axum_helpers::sql_traits::OffsetPagination>,
+        sqlx::Error,
+    > {
+        // The limit and offset that arrived, readable straight off the response body.
+        let data = if params.offset >= PAST_THE_END {
+            Vec::new()
+        } else {
+            vec![Widget {
+                id: i64::from(params.limit),
+                name: params.offset.to_string(),
+            }]
+        };
+
+        Ok(axum_helpers::sql_traits::Page {
+            data,
+            pagination: axum_helpers::sql_traits::OffsetPagination {
+                offset: params.offset,
+                limit: params.limit,
+                total: params.include_total.then_some(1234),
+            },
+        })
+    }
+}
+
+/// A maximum below the crate default of 50, so a bare request also proves the default comes
+/// from this type rather than from any crate-wide number.
+impl axum_helpers::ListRecordsPaginatedRoute<axum_helpers::OffsetParamsQuery<10, 25>> for Widget {}
+
+fn paged_router() -> axum_helpers::axum::Router {
+    axum_helpers::axum::Router::new()
+        .route(
+            "/widgets",
+            axum_helpers::axum::routing::get(
+                <Widget as axum_helpers::ListRecordsPaginatedRoute<
+                    axum_helpers::OffsetParamsQuery<10, 25>,
+                >>::list_records_paginated_route,
+            ),
+        )
+        .with_state(pool())
+}
+
+/// Sends one request through the paginated router and returns the status and body.
+async fn paged(uri: &str) -> (StatusCode, String) {
+    use axum_helpers::axum::body::{Body, to_bytes};
+    use axum_helpers::axum::http::Request;
+    use tower::ServiceExt as _;
+
+    let response = paged_router()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .body(Body::empty())
+                .expect("a valid request"),
+        )
+        .await
+        .expect("the router is infallible");
+
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("a complete body");
+    (status, String::from_utf8(bytes.to_vec()).expect("utf-8"))
+}
+
+#[tokio::test]
+async fn a_request_naming_no_parameters_reaches_the_impl_with_this_types_default() {
+    let (status, body) = paged("/widgets").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#""id":10"#) && body.contains(r#""name":"0""#),
+        "a bare request must arrive as limit 10, offset 0, got {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_named_limit_and_offset_reach_the_impl() {
+    let (status, body) = paged("/widgets?limit=5&offset=40").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#""id":5"#) && body.contains(r#""name":"40""#),
+        "got {body}"
+    );
+}
+
+#[tokio::test]
+async fn the_envelope_is_data_plus_a_nested_pagination_object() {
+    let (_, body) = paged("/widgets?limit=5&offset=40").await;
+
+    assert!(
+        body.starts_with(r#"{"data":["#) && body.contains(r#""pagination":{"#),
+        "the response must be an envelope, not a bare array, got {body}"
+    );
+}
+
+#[tokio::test]
+async fn an_unrequested_total_is_null_and_a_requested_one_is_a_number() {
+    let (_, without) = paged("/widgets").await;
+    assert!(
+        without.contains(r#""total":null"#),
+        "a total nobody asked for must be null, got {without}"
+    );
+
+    let (_, with) = paged("/widgets?include_total=true").await;
+    assert!(
+        with.contains(r#""total":1234"#),
+        "a requested total must be filled, got {with}"
+    );
+}
+
+#[tokio::test]
+async fn a_limit_of_zero_is_rejected() {
+    let (status, body) = paged("/widgets?limit=0").await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.starts_with(r#"{"message":"#), "got {body}");
+}
+
+#[tokio::test]
+async fn a_limit_above_the_maximum_is_rejected_and_the_maximum_is_inclusive() {
+    let (over, _) = paged("/widgets?limit=26").await;
+    assert_eq!(over, StatusCode::BAD_REQUEST);
+
+    let (at, _) = paged("/widgets?limit=25").await;
+    assert_eq!(at, StatusCode::OK, "the maximum itself must be allowed");
+}
+
+/// An empty page is still a page. `GetLatestRoute` answers `204` for an empty table, but a list
+/// that matched nothing is a successful list of nothing, and a client parsing the envelope must
+/// not have to handle a bodyless response as a special case.
+#[tokio::test]
+async fn an_empty_page_is_200_with_a_full_envelope_not_204() {
+    let (status, body) = paged(&format!("/widgets?offset={PAST_THE_END}")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#""data":[]"#) && body.contains(r#""pagination":{"#),
+        "an empty page keeps the envelope, got {body}"
+    );
+}
+
+/// The reason the handler extracts a `Result` rather than a bare `Query`: axum's own rejection
+/// body is plain text, and every error in this crate is a message object.
+#[tokio::test]
+async fn an_unparseable_limit_is_a_400_in_this_crates_error_shape() {
+    let (status, body) = paged("/widgets?limit=abc").await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body.starts_with(r#"{"message":"#),
+        "a query rejection must be rendered like every other error, got {body}"
+    );
+}
