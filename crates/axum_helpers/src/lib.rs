@@ -1,7 +1,9 @@
 mod errors;
+mod pagination;
 mod traits;
 
 pub use errors::*;
+pub use pagination::*;
 pub use traits::*;
 
 // Re-exported so downstream crates use the exact same versions these trait signatures and
