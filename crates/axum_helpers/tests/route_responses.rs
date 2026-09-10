@@ -530,3 +530,115 @@ async fn an_unparseable_limit_is_a_400_in_this_crates_error_shape() {
         "a query rejection must be rendered like every other error, got {body}"
     );
 }
+
+// --- The paginated *Where route ---------------------------------------------------------
+//
+// One request has to fill a path segment and a query string at once, which is the only thing
+// this route adds over the unfiltered one.
+
+/// The filter the route extracts from the path, serving as its own `PathParams` through the
+/// blanket `From<T> for T`.
+#[derive(serde::Deserialize)]
+#[serde(crate = "axum_helpers::serde")]
+struct OwnerFilter {
+    owner_id: i64,
+}
+
+#[async_trait]
+impl
+    axum_helpers::sql_traits::ListRecordsWherePaginated<
+        OwnerFilter,
+        axum_helpers::sql_traits::OffsetParams,
+    > for Widget
+{
+    async fn list_records_where_paginated(
+        _pool: &PgPool,
+        where_params: OwnerFilter,
+        params: axum_helpers::sql_traits::OffsetParams,
+    ) -> Result<
+        axum_helpers::sql_traits::Page<Self, axum_helpers::sql_traits::OffsetPagination>,
+        sqlx::Error,
+    > {
+        Ok(axum_helpers::sql_traits::Page {
+            // The filter's value and the limit, both readable off the body.
+            data: vec![Widget {
+                id: where_params.owner_id,
+                name: params.limit.to_string(),
+            }],
+            pagination: axum_helpers::sql_traits::OffsetPagination {
+                offset: params.offset,
+                limit: params.limit,
+                total: None,
+            },
+        })
+    }
+}
+
+impl
+    axum_helpers::ListRecordsWherePaginatedRoute<
+        OwnerFilter,
+        axum_helpers::OffsetParamsQuery<10, 25>,
+    > for Widget
+{
+    type PathParams = OwnerFilter;
+}
+
+async fn owner_paged(uri: &str) -> (StatusCode, String) {
+    use axum_helpers::axum::body::{Body, to_bytes};
+    use axum_helpers::axum::http::Request;
+    use tower::ServiceExt as _;
+
+    let router = axum_helpers::axum::Router::new()
+        .route(
+            "/owners/{owner_id}/widgets",
+            axum_helpers::axum::routing::get(
+                <Widget as axum_helpers::ListRecordsWherePaginatedRoute<
+                    OwnerFilter,
+                    axum_helpers::OffsetParamsQuery<10, 25>,
+                >>::list_records_where_paginated_route,
+            ),
+        )
+        .with_state(pool());
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .body(Body::empty())
+                .expect("a valid request"),
+        )
+        .await
+        .expect("the router is infallible");
+
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("a complete body");
+    (status, String::from_utf8(bytes.to_vec()).expect("utf-8"))
+}
+
+#[tokio::test]
+async fn a_paginated_where_route_binds_the_path_and_the_query_from_one_request() {
+    let (status, body) = owner_paged("/owners/7/widgets?limit=5").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#""id":7"#) && body.contains(r#""name":"5""#),
+        "the path segment must fill the filter and the query string the limit, got {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_paginated_where_route_still_defaults_the_limit() {
+    let (status, body) = owner_paged("/owners/7/widgets").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(r#""name":"10""#), "got {body}");
+}
+
+#[tokio::test]
+async fn a_paginated_where_route_rejects_an_over_max_limit() {
+    let (status, _) = owner_paged("/owners/7/widgets?limit=26").await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

@@ -33,7 +33,7 @@ use axum_helpers::sqlx::{self, PgPool};
 use axum_helpers::{
     BulkCreateRoute, CreateRoute, DeleteRecordsWhereRoute, DeleteRoute, GetLatestRoute,
     GetRecordRoute, GetRecordWhereRoute, ListRecordsPaginatedRoute, ListRecordsRoute,
-    ListRecordsWhereRoute, ReplaceRoute, UpdateRoute,
+    ListRecordsWherePaginatedRoute, ListRecordsWhereRoute, ReplaceRoute, UpdateRoute,
 };
 
 /// The primary key the fixtures treat as matching no row.
@@ -307,6 +307,36 @@ impl ListRecordsPaginatedRoute<axum_helpers::OffsetParamsQuery> for Gadget {}
 
 impl ListRecordsPaginatedRoute<axum_helpers::CursorParamsQuery<i64>> for Gadget {}
 
+#[async_trait]
+impl
+    axum_helpers::sql_traits::ListRecordsWherePaginated<
+        GadgetFilter,
+        axum_helpers::sql_traits::OffsetParams,
+    > for Gadget
+{
+    async fn list_records_where_paginated(
+        _pool: &PgPool,
+        _where_params: GadgetFilter,
+        params: axum_helpers::sql_traits::OffsetParams,
+    ) -> Result<
+        axum_helpers::sql_traits::Page<Self, axum_helpers::sql_traits::OffsetPagination>,
+        sqlx::Error,
+    > {
+        Ok(axum_helpers::sql_traits::Page {
+            data: Vec::new(),
+            pagination: axum_helpers::sql_traits::OffsetPagination {
+                offset: params.offset,
+                limit: params.limit,
+                total: None,
+            },
+        })
+    }
+}
+
+impl ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::OffsetParamsQuery> for Gadget {
+    type PathParams = GadgetFilter;
+}
+
 /// Every handler mounted on one router. If any of them stops satisfying axum's `Handler`
 /// trait this stops compiling, which is the whole assertion.
 fn build_router() -> Router<PgPool> {
@@ -338,6 +368,10 @@ fn build_router() -> Router<PgPool> {
         .route(
             "/gadgets/streamed",
             get(<Gadget as ListRecordsPaginatedRoute<axum_helpers::CursorParamsQuery<i64>>>::list_records_paginated_route),
+        )
+        .route(
+            "/owners/{owner_id}/gadgets/paged",
+            get(<Gadget as ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::OffsetParamsQuery>>::list_records_where_paginated_route),
         )
 }
 

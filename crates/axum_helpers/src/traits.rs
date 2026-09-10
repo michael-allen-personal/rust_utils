@@ -10,8 +10,8 @@ use sqlx::PgPool;
 use sql_traits::{
     BulkInsertRecords, DeleteRecord, DeleteRecordsWhere, GetLatestRecord, GetRecord,
     GetRecordWhere, HasPrimaryKey, HasRequestBody, HasUpdateFields, InsertRecord, ListRecords,
-    ListRecordsPaginated, ListRecordsWhere, PaginationParams, ReplaceRecord, UpdateFields,
-    UpdateRecord,
+    ListRecordsPaginated, ListRecordsWhere, ListRecordsWherePaginated, PaginationParams,
+    ReplaceRecord, UpdateFields, UpdateRecord,
 };
 
 use crate::{ApiError, ApiErrorResponse, PaginationQuery};
@@ -195,6 +195,53 @@ pub trait ListRecordsWhereRoute<T: Send>: ListRecordsWhere<T> + serde::Serialize
             .await
             .map_err(ApiError::from)
             .map(|records| (StatusCode::OK, response::Json(records)))
+            .into_response()
+    }
+}
+
+/// Axum route handler for listing one page of the records matching a filter taken from the URL
+/// path.
+///
+/// Returns `200 OK` with `{"data": [...], "pagination": {...}}`, or `400 Bad Request` if the
+/// query string is unparseable or asks for a limit outside the range `Q` allows.
+///
+/// Everything in [`ListRecordsPaginatedRoute`]'s documentation applies: the envelope is
+/// unconditional, the pagination mode is `Q`, the query extractor is a `Result` so a rejection
+/// is rendered in this crate's error shape, and a type may implement the trait once per mode.
+///
+/// Like the rest of the `*Where` family, `PathParams` has to be chosen by the implementor —
+/// it cannot be inferred from the record — which is why no derive can emit this impl.
+#[async_trait]
+pub trait ListRecordsWherePaginatedRoute<T: Send, Q>:
+    ListRecordsWherePaginated<T, Q::Params> + serde::Serialize
+where
+    Q: PaginationQuery,
+    <Q::Params as PaginationParams>::Pagination: serde::Serialize,
+{
+    type PathParams: Into<T> + DeserializeOwned + Send + 'static;
+
+    // TODO: Add a function for logging
+    async fn list_records_where_paginated_route(
+        State(pool): State<PgPool>,
+        Path(path_params): Path<Self::PathParams>,
+        query: Result<Query<Q>, QueryRejection>,
+    ) -> Response {
+        let Query(query) = match query {
+            Ok(query) => query,
+            Err(rejection) => {
+                return ApiErrorResponse::BadRequestWithMessage(rejection.body_text())
+                    .into_response();
+            }
+        };
+
+        if let Err(error) = query.validate() {
+            return ApiError::from(error).into_response();
+        }
+
+        Self::list_records_where_paginated(&pool, path_params.into(), query.into())
+            .await
+            .map_err(ApiError::from)
+            .map(|page| (StatusCode::OK, response::Json(page)))
             .into_response()
     }
 }
