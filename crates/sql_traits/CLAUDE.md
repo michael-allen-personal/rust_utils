@@ -63,6 +63,33 @@ matching no row is `Ok(None)`, which is what lets `axum_helpers` answer `404`. R
 
 Keep new fetch-one traits on that convention.
 
+## Pagination is two traits, because the mode is a type parameter
+
+`ListRecordsPaginated<P>` and `ListRecordsWherePaginated<T, P>` take the validated parameters
+as `P`, so offset and cursor mode are the same trait at `OffsetParams` and `CursorParams<C>`
+rather than four traits. `P::Pagination` is what the response carries, which is what lets one
+`axum_helpers` handler serve every mode: the metadata comes back from the query, and HTTP code
+could not have produced a total or a next cursor anyway.
+
+`CursorPagination<C>` is generic over the cursor, so `next` goes back out as the type that came
+in. A consumer whose cursor is a row id pays nothing; `String` is for an impl that genuinely
+needs an opaque composite cursor. Opacity is the implementor's decision, not this crate's.
+
+Four things the doc comments carry, each a silent wrong answer rather than a compile error:
+
+- **A cursor needs a total order.** `ORDER BY created_at` with ties skips and duplicates rows
+  across pages. End the sort with a unique tiebreaker and encode the whole sort key.
+- **`next` comes from fetching `limit + 1` and dropping the extra.** Anything else guesses or
+  pays for a second count.
+- **`total` is `Some` if and only if `include_total`.** The compiler cannot enforce an iff, so
+  it is a contract, asserted in `axum_helpers/tests/route_responses.rs`.
+- **No limits are enforced here.** Parameters arrive already validated; `axum_helpers` owns the
+  policy and a direct non-HTTP caller is trusted. Do not clamp — a silently reduced page is
+  indistinguishable from a short last page.
+
+`total: u32` means an implementation casts `count(*) OVER ()`'s `i64`. That is the
+implementation's business, not the trait's.
+
 ## Writing an `UpdateRecord` impl
 
 An update whose `SET` list depends on which fields are present cannot be a single

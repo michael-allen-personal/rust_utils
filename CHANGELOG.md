@@ -87,6 +87,44 @@
   generated body, which then rejects a key-bearing payload with `422`. The attribute is
   deliberately not stripped — an explicit opt-in to strictness is honoured. Bundled into
   `BasicCrudRoutes`, which now covers every CRUD operation
+- `sql_traits::Page`, `sql_traits::PaginationParams`, and the offset and cursor parameter and
+  metadata types, plus `sql_traits::ListRecordsPaginated<P>` and
+  `sql_traits::ListRecordsWherePaginated<T, P>`. Two traits rather than four, because the
+  pagination mode is the type parameter `P`: a record type offering both modes implements the
+  same trait at `OffsetParams` and at `CursorParams<C>`. `P::Pagination` is the metadata the
+  response carries, which is what lets one route handler serve every mode — a total or a next
+  cursor can only come from the query that fetched the rows, never from HTTP code afterwards.
+  `CursorPagination<C>` is generic over the cursor so `next` goes back out as the type that came
+  in, and an implementor whose cursor is a row id allocates nothing in either direction. The doc
+  comments carry the four contracts the compiler cannot: a cursor needs a total order, `next`
+  comes from a `limit + 1` fetch, `total` is `Some` iff the request asked, and no limit is
+  enforced in this crate. `ListRecords` and `ListRecordsWhere<T>` are untouched — a consumer does
+  nothing unless it opts in
+- `axum_helpers::ListRecordsPaginatedRoute<Q>` and
+  `axum_helpers::ListRecordsWherePaginatedRoute<T, Q>`, with the query-string types
+  `OffsetParamsQuery<DEFAULT_LIMIT, MAX_LIMIT>` and `CursorParamsQuery<C, DEFAULT_LIMIT, MAX_LIMIT>`
+  and the `PaginationQuery` trait pairing each with the validated parameters it resolves to.
+  Pagination is a separate route trait rather than a mode of `ListRecordsRoute`, so a response is
+  never sometimes an array and sometimes an object: a type opts in by naming the trait, and then
+  every response is an envelope, empty pages included. The limit policy is const generic rather
+  than a pair of associated consts because that keeps the query-to-params conversion an
+  infallible, total `From` — the default limit is stated exactly once, in `Default`, and
+  `validate` reads the maximum off the type instead of having it threaded in. A transposed
+  `<DEFAULT, MAX>` pair is a compile error. `limit` is consequently a plain `u16` rather than an
+  `Option`: the container's `serde` default comes from *this type's* `Default`, so a type whose
+  maximum sits below the crate-wide default still serves a request that names no limit, which a
+  crate-wide serde default could not. That attribute has to name its path — a bare
+  `#[serde(default)]` panics `serde_derive` on a const-generic struct — which makes the struct
+  and const parameter names load-bearing, as `crates/axum_helpers/CLAUDE.md` records. The handlers
+  extract `Result<Query<Q>, QueryRejection>` so an unparseable query string answers
+  `{"message": "..."}` like every other error here instead of axum's plain-text default
+- **Breaking.** `axum_helpers::RequestError`, a new `error_set!` subset holding
+  `InvalidPaginationLimit { requested, max }`, which is also therefore a new `ApiError` variant.
+  `error_set!` generates a plain enum with no `#[non_exhaustive]`, so a consumer that matches
+  `ApiError` exhaustively must add an arm or a wildcard. It is a subset rather than inline
+  variants so `PaginationQuery::validate` returns only the error it can actually produce and the
+  handler widens it with `?`; the status decision stays in the single `From<ApiError> for
+  ApiErrorResponse` match where every other status is made
 
 ### Changed
 

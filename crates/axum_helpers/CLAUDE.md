@@ -22,6 +22,9 @@ write a handler is itself under test.
 | `GetRecordWhere<T>` | `GetRecordWhereRoute<T>` | `200` + JSON | `404` |
 | `GetLatestRecord` | `GetLatestRoute` | `200` + JSON | `204` |
 | `ListRecords` / `ListRecordsWhere<T>` | `ListRecordsRoute` / `ListRecordsWhereRoute<T>` | `200` + array | — |
+| `ListRecordsPaginated<OffsetParams>` | `ListRecordsPaginatedRoute<OffsetParamsQuery<..>>` | `200` + envelope | — |
+| `ListRecordsPaginated<CursorParams<C>>` | `ListRecordsPaginatedRoute<CursorParamsQuery<C, ..>>` | `200` + envelope | — |
+| `ListRecordsWherePaginated<T, P>` | `ListRecordsWherePaginatedRoute<T, Q>` | `200` + envelope | — |
 | `InsertRecord` / `BulkInsertRecords` | `CreateRoute` / `BulkCreateRoute` | `201` + JSON | — |
 | `ReplaceRecord` | `ReplaceRoute` | `200` + JSON | `404` |
 | `UpdateRecord` | `UpdateRoute` | `200` + JSON | `404`, or `400` if the body is empty |
@@ -57,6 +60,39 @@ and a key field no segment names is a `400` from the extractor before the handle
 
 This is why the generated key type is a struct and not a tuple — see `crates/macros/CLAUDE.md`.
 
+## The limit policy lives in the query type
+
+`OffsetParamsQuery<DEFAULT_LIMIT, MAX_LIMIT>` carries its policy as const generic parameters, so
+a mount site states it where a reader will see it (`impl ListRecordsPaginatedRoute<OffsetParamsQuery<20, 100>> for Invoice {}`)
+and the conversion into `sql_traits`' validated types is an infallible, total `From`. The default
+is stated once, in `Default`; the maximum is checked by `validate`, which needs no arguments
+because it reads the type. Nothing restates either.
+
+The parameters are positional, so a transposed pair is the failure worth catching, and
+`POLICY_IS_COHERENT` makes it a compile error. Every genuine transposition trips it, since it
+makes the default exceed the maximum — the sole exception is `DEFAULT == MAX`, where transposing
+changes nothing. It is a post-monomorphization error, so the diagnostic points into the handler
+body with an instantiation chain back to the mount site.
+
+**The container `serde` attribute names its path as a string.** `#[serde(default = "OffsetParamsQuery::<DEFAULT_LIMIT, MAX_LIMIT>::default")]`
+is not a style choice: a bare `#[serde(default)]` makes `serde_derive` add a `Self: Default`
+predicate and panic outright with "Serde does not support const generics yet". That means the
+struct name and both const parameter names are load-bearing in the same way crate names and
+root re-export positions are — rename either and deserialization breaks with an unresolved-path
+error inside generated code. `Self::default` does not work there either; `Self` is serde's
+internal `__Visitor`.
+
+Because the default arrives through `Default`, `limit` needs no `Option`: a request naming no
+limit deserializes straight to `DEFAULT_LIMIT`, and an explicit `?limit=0` still survives to be
+rejected.
+
+## Why the paginated routes extract a `Result<Query<Q>, QueryRejection>`
+
+A bare `Query<Q>` rejection renders as axum's plain-text default, which would make an
+unparseable `?limit=abc` the one error in this crate whose body is not `{"message": "..."}`.
+Extracting the `Result` moves that rendering into the handler, once, for every implementor —
+the same argument as the empty-update `400`.
+
 ## The `*Where` family has no derive
 
 `GetRecordWhereRoute`, `ListRecordsWhereRoute` and `DeleteRecordsWhereRoute` each declare a
@@ -70,6 +106,11 @@ cannot be inferred from the struct. They are therefore invisible to `crates/macr
 status-plus-JSON-message rendering, and every error body is `{"message": "..."}`. `sqlx`
 errors become `500`, serde errors `400`. There is a standing TODO on that last one: serde
 cannot currently distinguish deserialization (a genuine `400`) from serialization (a `500`).
+
+`RequestError` is the client-input subset: `InvalidPaginationLimit { requested, max }` today. It
+is a subset rather than inline `ApiError` variants so `PaginationQuery::validate` can return only
+what it can actually produce and widen with `?`. Note `UpdateRoute`'s empty-body `400` is still an
+inline `ApiErrorResponse` and is the standing exception to that.
 
 ## Tests
 
