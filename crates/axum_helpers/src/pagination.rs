@@ -63,23 +63,43 @@ pub struct CursorParamsQuery<C, const DEFAULT_LIMIT: u16 = 50, const MAX_LIMIT: 
     pub cursor: Option<C>,
 }
 
+/// Catches an incoherent limit policy at compile time. The const parameters are positional, so
+/// the failure worth catching is a transposed pair: every genuine transposition makes the default
+/// exceed the maximum, except `DEFAULT_LIMIT == MAX_LIMIT`, where transposing changes nothing.
+///
+/// Shared by both query types rather than written twice, because the check concerns only the limit
+/// parameters, which both carry identically. Reached through each type's `POLICY_IS_COHERENT`,
+/// whose evaluation is what makes a bad pair a compile error.
+const fn assert_policy_coherent(default_limit: u16, max_limit: u16) {
+    assert!(max_limit >= 1, "MAX_LIMIT must be at least 1");
+    assert!(
+        default_limit <= max_limit,
+        "DEFAULT_LIMIT exceeds MAX_LIMIT — are the parameters transposed?"
+    );
+}
+
+/// The limit check both query types perform. Shared for the same reason as
+/// [`assert_policy_coherent`]: it reads only the limit, so neither wire shape's own fields enter
+/// into it, and one copy means one place to change the rule.
+fn validate_limit(limit: u16, max_limit: u16) -> Result<(), RequestError> {
+    if limit == 0 || limit > max_limit {
+        return Err(RequestError::InvalidPaginationLimit {
+            requested: limit,
+            max: max_limit,
+        });
+    }
+    Ok(())
+}
+
 impl<const DEFAULT_LIMIT: u16, const MAX_LIMIT: u16> OffsetParamsQuery<DEFAULT_LIMIT, MAX_LIMIT> {
     /// The limit a request that names none resolves to.
     pub const DEFAULT_LIMIT: u16 = DEFAULT_LIMIT;
     /// The largest limit a request may ask for.
     pub const MAX_LIMIT: u16 = MAX_LIMIT;
 
-    /// Catches an incoherent policy at compile time. The parameters are positional, so the
-    /// failure worth catching is a transposed pair: every genuine transposition makes the
-    /// default exceed the maximum, except `DEFAULT_LIMIT == MAX_LIMIT`, where transposing
-    /// changes nothing.
-    const POLICY_IS_COHERENT: () = {
-        assert!(MAX_LIMIT >= 1, "MAX_LIMIT must be at least 1");
-        assert!(
-            DEFAULT_LIMIT <= MAX_LIMIT,
-            "DEFAULT_LIMIT exceeds MAX_LIMIT — are the parameters transposed?"
-        );
-    };
+    /// Evaluated by [`PaginationQuery::validate`], which is what makes a transposed parameter
+    /// pair a compile error rather than a runtime surprise.
+    const POLICY_IS_COHERENT: () = assert_policy_coherent(DEFAULT_LIMIT, MAX_LIMIT);
 }
 
 impl<C, const DEFAULT_LIMIT: u16, const MAX_LIMIT: u16>
@@ -91,13 +111,7 @@ impl<C, const DEFAULT_LIMIT: u16, const MAX_LIMIT: u16>
     pub const MAX_LIMIT: u16 = MAX_LIMIT;
 
     /// See [`OffsetParamsQuery::POLICY_IS_COHERENT`]; the limit parameters mean the same here.
-    const POLICY_IS_COHERENT: () = {
-        assert!(MAX_LIMIT >= 1, "MAX_LIMIT must be at least 1");
-        assert!(
-            DEFAULT_LIMIT <= MAX_LIMIT,
-            "DEFAULT_LIMIT exceeds MAX_LIMIT — are the parameters transposed?"
-        );
-    };
+    const POLICY_IS_COHERENT: () = assert_policy_coherent(DEFAULT_LIMIT, MAX_LIMIT);
 }
 
 /// The one place the default limit is stated. The container's `serde` attribute points here,
@@ -135,13 +149,7 @@ impl<const DEFAULT_LIMIT: u16, const MAX_LIMIT: u16> PaginationQuery
 
     fn validate(&self) -> Result<(), RequestError> {
         let () = Self::POLICY_IS_COHERENT;
-        if self.limit == 0 || self.limit > MAX_LIMIT {
-            return Err(RequestError::InvalidPaginationLimit {
-                requested: self.limit,
-                max: MAX_LIMIT,
-            });
-        }
-        Ok(())
+        validate_limit(self.limit, MAX_LIMIT)
     }
 }
 
@@ -154,13 +162,7 @@ where
 
     fn validate(&self) -> Result<(), RequestError> {
         let () = Self::POLICY_IS_COHERENT;
-        if self.limit == 0 || self.limit > MAX_LIMIT {
-            return Err(RequestError::InvalidPaginationLimit {
-                requested: self.limit,
-                max: MAX_LIMIT,
-            });
-        }
-        Ok(())
+        validate_limit(self.limit, MAX_LIMIT)
     }
 }
 
