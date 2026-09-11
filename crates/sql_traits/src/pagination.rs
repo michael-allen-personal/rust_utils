@@ -6,7 +6,9 @@
 //! docs below for what an implementation is trusted to do.
 
 use ::async_trait::async_trait;
-use ::sqlx::PgPool;
+use ::sqlx::Pool;
+
+use crate::HasDatabase;
 
 /// What a pagination mode contributes to a response.
 ///
@@ -128,12 +130,12 @@ impl<C> PaginationParams for CursorParams<C> {
 /// sane. Do not second-guess it, and do not clamp it: a silently reduced page size is
 /// indistinguishable from a short last page.
 #[async_trait]
-pub trait ListRecordsPaginated<P>: Sized
+pub trait ListRecordsPaginated<P>: Sized + HasDatabase
 where
     P: PaginationParams + Send,
 {
     async fn list_records_paginated(
-        pool: &PgPool,
+        pool: &Pool<<Self as HasDatabase>::Database>,
         params: P,
     ) -> Result<Page<Self, P::Pagination>, sqlx::Error>;
 }
@@ -145,13 +147,13 @@ where
 /// enforcement. The only difference is the filter, which narrows what is counted as well as
 /// what is returned.
 #[async_trait]
-pub trait ListRecordsWherePaginated<T, P>: Sized
+pub trait ListRecordsWherePaginated<T, P>: Sized + HasDatabase
 where
     T: Send,
     P: PaginationParams + Send,
 {
     async fn list_records_where_paginated(
-        pool: &PgPool,
+        pool: &Pool<<Self as HasDatabase>::Database>,
         where_params: T,
         params: P,
     ) -> Result<Page<Self, P::Pagination>, sqlx::Error>;

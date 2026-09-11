@@ -1,6 +1,6 @@
 # macros
 
-Every derive in the workspace. Thirteen of them, in three tiers.
+Every derive in the workspace. Fourteen of them, in three tiers.
 
 **This crate depends on nothing it generates code for** — only `syn`, `quote` and
 `proc-macro2`. Nothing here can type-check its own output; the expansions name
@@ -9,9 +9,11 @@ a use site, through the target crates' re-exports. That single fact drives every
 
 ## The three tiers
 
-**Generators** — `PrimaryKey`, `Record`, `Update`. These read `#[macros(...)]` and emit new
-types plus the `sql_traits` association impls. Reserved names: `{Name}PrimaryKey`,
-`{Name}Body`, `{Name}Update`.
+**Generators** — `PrimaryKey`, `Record`, `Update`, `Database`. The first three read
+`#[macros(...)]` and emit new types plus the `sql_traits` association impls. Reserved names:
+`{Name}PrimaryKey`, `{Name}Body`, `{Name}Update`. `Database` reads
+`#[macros(database = Db)]` and emits only the `HasDatabase` impl — no new type, so it
+reserves no name of its own.
 
 **Route markers** — `GetRecordRoute`, `ListRecordsRoute`, `ReplaceRoute`, `UpdateRoute`,
 `DeleteRoute`, `GetLatestRoute` (empty impls, requirements enforced by the trait
@@ -26,7 +28,10 @@ every deriving type to implement `GetLatestRecord`.
 Plus `MaxVecCapacity`, which belongs to `generic_helpers` and is otherwise unrelated.
 
 `Record` and `Update` are designed to be derived together. `PrimaryKey` alongside `Record`
-is not: both emit `impl HasPrimaryKey`, so it is a pile of duplicate-item errors.
+is not: both emit `impl HasPrimaryKey`, so it is a pile of duplicate-item errors. `Database`
+is designed to be derived alongside any of the other three — it emits a different impl
+(`HasDatabase`) and carries its own directive, and `Record`/`Update`/`PrimaryKey` each
+tolerate `#[macros(database = Db)]` on the struct without consuming it.
 
 ## Absolute paths, always
 
@@ -43,18 +48,25 @@ load-bearing; `crates/generic_helpers/CLAUDE.md` records the full story.
 
 ## `#[macros(...)]` errors, never skips
 
-Exactly three directives: `primary_key` on a field, `body_derive(...)` and
-`update_derive(...)` on the struct. Anything else — a typo, a stray comma, a non-list form, a
-struct directive written on a field — is a `compile_error!` naming what was found and what is
-accepted. Errors are accumulated, so several bad attributes all report at once.
+Exactly four directives: `primary_key` on a field, and `body_derive(...)`,
+`update_derive(...)` and `database = Db` on the struct — `Db` one of `Postgres`, `Sqlite`,
+`MySql`, `Any`. Anything else — a typo, a stray comma, a non-list form, a struct directive
+written on a field — is a `compile_error!` naming what was found and what is accepted.
+Errors are accumulated, so several bad attributes all report at once.
 
 Silence here was actively dangerous, not merely unhelpful: a malformed
 `#[macros(primary_key,)]` used to drop the field out of the key *and* put it into the
 generated request body — the exact key leak the body type exists to prevent, and one no
 round-trip test can catch, because the isomorphism still holds when the partition is wrong.
+`database` has no such silent-fallback failure mode to guard against, but it is still a hard
+error when absent rather than a default: a default would hide which database a record
+targets, and would fail with a message about Postgres on a consumer that never enabled that
+driver.
 
 `Record` and `Update` tolerate *each other's* struct-level list, since a derive macro cannot
-see its siblings and so cannot tell a typo from a directive meant for the other one.
+see its siblings and so cannot tell a typo from a directive meant for the other one. All
+three generators additionally tolerate `database`, which none of them reads themselves —
+it is present only for `Database` to read when derived alongside one of them.
 
 ## Why derive lists have to be named explicitly
 

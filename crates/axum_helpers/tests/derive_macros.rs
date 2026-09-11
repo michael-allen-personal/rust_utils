@@ -29,9 +29,11 @@ use axum_helpers::{
     macros::Record,
     macros::Update,
     macros::BasicCrudRoutes,
+    macros::Database,
 )]
 #[macros(body_derive(axum_helpers::serde::Deserialize))]
 #[macros(update_derive(axum_helpers::serde::Deserialize))]
+#[macros(database = Postgres)]
 #[serde(crate = "axum_helpers::serde")]
 struct Widget {
     #[macros(primary_key)]
@@ -114,7 +116,8 @@ impl axum_helpers::sql_traits::UpdateRecord for Widget {
 
 // `GetLatestRoute` is a standalone derive rather than part of `BasicCrudRoutes`, so it gets
 // its own type: `Gizmo` carries only what that one derive needs.
-#[derive(axum_helpers::serde::Serialize, macros::GetLatestRoute)]
+#[derive(axum_helpers::serde::Serialize, macros::GetLatestRoute, macros::Database)]
+#[macros(database = Postgres)]
 #[serde(crate = "axum_helpers::serde")]
 struct Gizmo {
     #[allow(dead_code)]
@@ -193,8 +196,10 @@ fn get_latest_route_derive_is_self_contained() {
     axum_helpers::serde::Deserialize,
     macros::Record,
     macros::ReplaceRoute,
+    macros::Database,
 )]
 #[macros(body_derive(axum_helpers::serde::Deserialize))]
+#[macros(database = Postgres)]
 #[serde(crate = "axum_helpers::serde")]
 struct Sprocket {
     #[macros(primary_key)]
@@ -249,9 +254,16 @@ fn a_body_carrying_the_primary_key_still_deserializes_with_the_key_discarded() {
 // the one fixture carrying both, so it is what proves they compose — and that the update
 // type's generated `::sql_traits::double_option` path resolves from a crate that reaches
 // everything else through `axum_helpers`' re-exports.
-#[derive(axum_helpers::serde::Serialize, macros::Record, macros::Update, macros::UpdateRoute)]
+#[derive(
+    axum_helpers::serde::Serialize,
+    macros::Record,
+    macros::Update,
+    macros::UpdateRoute,
+    macros::Database,
+)]
 #[macros(body_derive(axum_helpers::serde::Deserialize))]
 #[macros(update_derive(axum_helpers::serde::Deserialize))]
+#[macros(database = Postgres)]
 #[serde(crate = "axum_helpers::serde")]
 struct Cog {
     #[macros(primary_key)]
@@ -321,9 +333,14 @@ fn the_derived_update_type_distinguishes_an_absent_field_from_an_explicit_null()
 // assertion; `route_responses.rs` covers what the binding actually does at runtime.
 
 #[derive(
-    axum_helpers::serde::Serialize, macros::Record, macros::GetRecordRoute, macros::DeleteRoute,
+    axum_helpers::serde::Serialize,
+    macros::Record,
+    macros::GetRecordRoute,
+    macros::DeleteRoute,
+    macros::Database,
 )]
 #[macros(body_derive(axum_helpers::serde::Deserialize))]
+#[macros(database = Postgres)]
 #[serde(crate = "axum_helpers::serde")]
 struct Membership {
     #[macros(primary_key)]

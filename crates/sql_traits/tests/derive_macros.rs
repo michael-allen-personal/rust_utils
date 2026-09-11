@@ -13,7 +13,8 @@
 use sql_traits::UpdateFields as _;
 
 // Single primary key -> `PrimaryKey` is the field's type.
-#[derive(macros::PrimaryKey)]
+#[derive(macros::PrimaryKey, macros::Database)]
+#[macros(database = Sqlite)]
 struct User {
     #[macros(primary_key)]
     id: i64,
@@ -47,7 +48,7 @@ fn assert_get_record<T: sql_traits::GetRecord>() {}
 #[sql_traits::async_trait::async_trait]
 impl sql_traits::GetRecord for User {
     async fn get_record(
-        _pool: &sql_traits::sqlx::PgPool,
+        _pool: &sql_traits::sqlx::Pool<sql_traits::sqlx::Sqlite>,
         _primary_key: <Self as sql_traits::HasPrimaryKey>::PrimaryKey,
     ) -> Result<Option<Self>, sql_traits::sqlx::Error> {
         Ok(None)

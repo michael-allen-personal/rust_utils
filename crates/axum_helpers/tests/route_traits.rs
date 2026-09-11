@@ -39,7 +39,8 @@ use axum_helpers::{
 /// The primary key the fixtures treat as matching no row.
 const MISSING_ID: i64 = 404;
 
-#[derive(axum_helpers::serde::Serialize, axum_helpers::serde::Deserialize)]
+#[derive(axum_helpers::serde::Serialize, axum_helpers::serde::Deserialize, macros::Database)]
+#[macros(database = Postgres)]
 #[serde(crate = "axum_helpers::serde")]
 struct Gadget {
     id: i64,
@@ -419,4 +420,80 @@ fn build_router() -> Router<PgPool> {
 #[test]
 fn every_route_handler_mounts_on_a_router() {
     let _router = build_router();
+}
+
+// --- A second fixture on a second database ------------------------------------------
+//
+// `Gadget` above is Postgres. This one is SQLite, and the assertion is simply that both
+// mount: the route traits carry no database of their own, they follow each record's
+// `HasDatabase`. A regression that re-hard-coded one driver would fail to compile here.
+
+use axum_helpers::sqlx::{Pool, Sqlite};
+
+#[derive(axum_helpers::serde::Serialize, macros::Database)]
+#[macros(database = Sqlite)]
+#[serde(crate = "axum_helpers::serde")]
+struct Sprocket {
+    id: i64,
+    name: String,
+}
+
+#[derive(axum_helpers::serde::Deserialize)]
+#[serde(crate = "axum_helpers::serde")]
+struct SprocketFilter {
+    name: String,
+}
+
+impl HasPrimaryKey for Sprocket {
+    type PrimaryKey = i64;
+    fn primary_key(&self) -> i64 {
+        self.id
+    }
+}
+
+#[async_trait]
+impl GetRecord for Sprocket {
+    async fn get_record(
+        _pool: &Pool<Sqlite>,
+        _primary_key: i64,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl ListRecords for Sprocket {
+    async fn list_records(_pool: &Pool<Sqlite>) -> Result<Vec<Self>, sqlx::Error> {
+        Ok(Vec::new())
+    }
+}
+
+#[async_trait]
+impl ListRecordsWhere<SprocketFilter> for Sprocket {
+    async fn list_records_where(
+        _pool: &Pool<Sqlite>,
+        _where_params: SprocketFilter,
+    ) -> Result<Vec<Self>, sqlx::Error> {
+        Ok(Vec::new())
+    }
+}
+
+impl GetRecordRoute for Sprocket {}
+impl ListRecordsRoute for Sprocket {}
+impl ListRecordsWhereRoute<SprocketFilter> for Sprocket {
+    type PathParams = SprocketFilter;
+}
+
+/// Mounting is the check that matches the failure mode: a handler can satisfy its trait
+/// bounds and still be rejected by `Router::route`. No turbofish is needed — the state
+/// type pins the database.
+#[test]
+fn sqlite_backed_handlers_mount_on_a_router() {
+    let _router: Router<Pool<Sqlite>> = Router::new()
+        .route("/sprockets/{id}", get(Sprocket::get_record_route))
+        .route("/sprockets", get(Sprocket::list_records_route))
+        .route(
+            "/sprockets/by-name",
+            get(Sprocket::list_records_where_route),
+        );
 }

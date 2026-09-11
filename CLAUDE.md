@@ -23,20 +23,30 @@ workspace's assertions live in `tests/` crates that a plain `cargo check` never 
 a bare `cargo check` can pass while the generated macro output is broken. Run `cargo test`
 before believing a change works.
 
-No database is needed. `sqlx::PgPool::connect_lazy` builds a pool without connecting, and
-the test fixtures' SQL impls ignore it, so handlers can be driven without Postgres.
+No database *server* is needed. Where a test needs a real query, it builds a real in-memory
+SQLite database (`sqlite::memory:`) — `sqlx` 0.9 shares one in-memory database across every
+connection a pool hands out, so no `max_connections(1)` or shared-cache URI juggling is
+required. Fixtures whose subject is HTTP or macro plumbing rather than the SQL itself still
+fake their trait impls; either way, nothing here talks to a running Postgres.
 
 ## The crates
 
 ```
 generic_helpers      standalone; str_enum! + file helpers. One dep (error_set).
-sql_traits           database traits over sqlx/Postgres. Knows nothing about HTTP.
+sql_traits           database traits over sqlx, generic over the driver. Knows nothing about HTTP.
 axum_helpers    ───▶ sql_traits. Wraps each SQL trait in an axum route handler.
 macros               proc-macro crate. Depends on NONE of the above.
 ```
 
 The layering is one-way and worth preserving: `sql_traits` must stay free of `axum`, so a
 non-HTTP consumer can use the database traits alone.
+
+Every SQL trait and every route trait is generic over the database via
+`sql_traits::HasDatabase` — a record names its database once, as an associated type, and
+every pool-taking method and axum mount site follows it rather than each naming `PgPool`
+for itself. Neither `sql_traits` nor `axum_helpers` enables a `sqlx` driver or picks a
+runtime feature; both are the consumer's choice, made through the
+`postgres`/`sqlite`/`mysql`/`any` features each crate forwards to `sqlx`.
 
 ## Three workspace-wide conventions
 
@@ -50,6 +60,12 @@ A dependency whose types appear in a public signature is re-exported (`sql_trait
 the crate themselves, which guarantees a single compiled copy — two incompatible `sqlx`
 versions otherwise produce "expected `Pool`, found `Pool`". Adding a dependency that shows
 up in a signature means adding a `pub use` for it too.
+
+The same reasoning covers driver selection. A consumer depends on the re-exported `sqlx`
+rather than a separately declared one, so it has no `sqlx` of its own on which to flip a
+driver feature. `sql_traits` and `axum_helpers` therefore each forward
+`postgres`/`sqlite`/`mysql`/`any` to their `sqlx` dependency (`axum_helpers`'s forward to
+`sql_traits`'s too), so a consumer picks a driver through the crate it already depends on.
 
 ### 2. Macro output names everything by absolute path
 

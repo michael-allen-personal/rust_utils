@@ -74,10 +74,11 @@
   looked up, so an empty body is a `400` whether or not the row exists. Bundled into
   `BasicCrudRoutes`, which now covers every CRUD operation
 - `crates/axum_helpers/tests/route_responses.rs`: response-code assertions for the route
-  handlers, as opposed to the compile-and-mount checks the other test crates do.
-  `PgPool::connect_lazy` builds a pool without opening a connection, so a handler can be
-  awaited and its status inspected without a database. This is what caught the replace
-  handler answering `200` with a `null` body for a missing row
+  handlers, as opposed to the compile-and-mount checks the other test crates do. Its
+  `Widget` fixture runs against a real in-memory SQLite database, built fresh per test —
+  `sqlite::memory:` needs no server, only a real table to query, so a handler can still be
+  awaited and its status inspected without standing up a database. This is what caught the
+  replace handler answering `200` with a `null` body for a missing row
 - `axum_helpers::ReplaceRoute` and a matching derive: a `PUT` handler taking the primary key
   from the URL path and a key-less body from JSON, returning `200 OK` with the replaced
   record. Because the body type has no key field, a generated OpenAPI schema omits the key
@@ -170,6 +171,20 @@
   produces and have it render itself, rather than widening to `ApiError` by hand at every call
   site. Both route through `From<ApiError>`, so a subset and the whole cannot answer different
   statuses for the same variant
+- `sql_traits::HasDatabase`, associating a record with the one database its queries run
+  against. The database travels as an associated type rather than a parameter on each
+  trait, which is what keeps every trait's parameter list and every axum mount site
+  unchanged: a record names its database once and the thirteen pool-taking traits follow
+  it. It is deliberately not a supertrait of `HasPrimaryKey` — the key, request-body and
+  update-fields machinery never touches a pool and stays database-agnostic
+- `macros::Database`, a derive reading `#[macros(database = Sqlite)]` and emitting the
+  `HasDatabase` impl. Standalone rather than folded into `Record`, so a hand-written record
+  and a separate insert-side type can both use it. The directive is required; its absence
+  is a compile error naming the accepted set (`Postgres`, `Sqlite`, `MySql`, `Any`) rather
+  than a silent default
+- Driver features on `sql_traits` and `axum_helpers` (`postgres`, `sqlite`, `mysql`,
+  `any`), forwarding to `sqlx`. They exist so a consumer can pick a driver while still
+  depending on the re-exported `sqlx` rather than declaring it themselves
 
 ### Changed
 
@@ -262,6 +277,20 @@
   `BasicCrudRoutes`, `CreateRoute`, `BulkCreateRoute`, or `DeleteRoute` needs its `InsertSQL`,
   `BulkInsertSQL`, and `DeleteSQL` impls renamed to match. As with any unmet supertrait, the
   error lands on the generated impl naming the trait it cannot find, not on the derive
+- **Breaking.** All thirteen pool-taking SQL traits and all thirteen route traits now take
+  `Pool<<Self as HasDatabase>::Database>` in place of `PgPool`, and every type implementing
+  one must implement `HasDatabase`. Add `#[derive(macros::Database)]` with
+  `#[macros(database = Postgres)]` to each record, or write the three-line impl by hand.
+  Existing method bodies and signatures do not change: `Pool<Postgres>` *is* `PgPool`, so an
+  impl written `async fn get_record(pool: &PgPool, ...)` still satisfies the new signature
+  once its `Database` is `Postgres`
+- **Breaking.** Neither crate enables a `sqlx` driver any more, so a consumer must enable
+  one: `sql_traits = { ..., features = ["postgres"] }`, and likewise for `axum_helpers`.
+  Without it, nothing names a driver and `sqlx::Postgres` will not resolve. Note that cargo
+  feature unification can mask this — if any other crate in your graph enables
+  `sqlx/postgres`, the build may succeed until that dependency changes. Set the feature
+  explicitly rather than relying on it. The upside is that a SQLite-only consumer no longer
+  compiles `sqlx-postgres` at all
 
 ## v0.7.0
 

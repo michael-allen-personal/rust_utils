@@ -8,7 +8,8 @@
 
 use sql_traits::{HasPrimaryKey, HasUpdateFields, UpdateFields};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, macros::Database)]
+#[macros(database = Sqlite)]
 struct User {
     id: i64,
     name: String,
@@ -141,7 +142,7 @@ fn the_primary_key_is_never_part_of_the_update_fields() {
 #[sql_traits::async_trait::async_trait]
 impl sql_traits::UpdateRecord for User {
     async fn update_record(
-        _pool: &sql_traits::sqlx::PgPool,
+        _pool: &sql_traits::sqlx::Pool<sql_traits::sqlx::Sqlite>,
         primary_key: <Self as HasPrimaryKey>::PrimaryKey,
         update_fields: <Self as HasUpdateFields>::UpdateFields,
     ) -> Result<Option<Self>, sql_traits::sqlx::Error> {
