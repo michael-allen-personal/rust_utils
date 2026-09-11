@@ -157,9 +157,19 @@ cannot be inferred from the struct. They are therefore invisible to `crates/macr
 ## Errors
 
 `ApiError` (via `error_set!`) is the handler-facing error; `ApiErrorResponse` is the
-status-plus-JSON-message rendering, and every error body is `{"message": "..."}`. `sqlx`
-errors become `500`, serde errors `400`. There is a standing TODO on that last one: serde
-cannot currently distinguish deserialization (a genuine `400`) from serialization (a `500`).
+status-plus-JSON-message rendering, and every error body is `{"message": "..."}`. `IOError`
+is the server's own I/O failing and both its variants are a `500` — `sqlx` errors and
+`serde_json` errors alike.
+
+**A `serde_json` error is a `500`, not a `400`.** It looks like the client's fault and is not:
+no request this crate serves can reach that variant. A JSON body is deserialized by axum's
+`Json` extractor, which rejects with its own `400` before the handler is called, and a query
+string arrives as `ApiError::InvalidQueryParams`. What is left is the server failing to
+serialize a value of its own, which the client can do nothing about. This replaced a standing
+TODO that assumed the variant had to be split into a deserialization `400` and a serialization
+`500`; the deserialization half never arrives, so there is nothing to split. The rule that
+keeps it true is `IOError`'s membership: a variant that *can* be the client's fault goes in
+`ValidationError` or inline on `ApiError`, not here.
 
 `ValidationError` is the validation subset: `InvalidPaginationLimit { requested, max }` today. It
 is a subset rather than inline `ApiError` variants so `PaginationQuery::validate` can return only

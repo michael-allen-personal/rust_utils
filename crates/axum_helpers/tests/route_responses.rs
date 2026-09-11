@@ -381,6 +381,36 @@ async fn each_error_subset_renders_itself_at_the_status_its_variants_get() {
         StatusCode::INTERNAL_SERVER_ERROR,
         "every sqlx error is a 500, this path included"
     );
+
+    let io_error = axum_helpers::IOError::Serde(serde_error()).into_response();
+    assert_eq!(
+        io_error.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "every serde error is a 500, this path included"
+    );
+}
+
+/// A `serde_json::Error` to render, built the only way one can be: by asking `serde_json` to
+/// parse something it cannot. Its *shape* is a deserialization failure, which is the point —
+/// see [`a_serde_error_is_a_500_even_though_it_reads_like_a_400`].
+fn serde_error() -> axum_helpers::serde_json::Error {
+    axum_helpers::serde_json::from_str::<i64>("not a number")
+        .expect_err("`not a number` is not an i64")
+}
+
+/// The status that is easiest to get wrong, because the variant reads like the client's fault.
+/// Nothing a client sends reaches it: a JSON body fails in axum's `Json` extractor as its own
+/// `400` before the handler runs, and a query string arrives as `InvalidQueryParams`. So even
+/// a deserialization-shaped `serde_json::Error` here is the server failing to serialize
+/// something of its own, and a `500` is the honest answer. Asserted through `ApiError`, where
+/// the decision is made, as well as through the subset above.
+#[tokio::test]
+async fn a_serde_error_is_a_500_even_though_it_reads_like_a_400() {
+    use axum_helpers::axum::response::IntoResponse;
+
+    let response = axum_helpers::ApiError::Serde(serde_error()).into_response();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 // --- Paginated list responses ----------------------------------------------------------

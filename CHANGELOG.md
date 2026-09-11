@@ -173,6 +173,19 @@
 
 ### Changed
 
+- **Breaking.** `ApiError::Serde` now renders a `500` rather than a `400`. It reads like the
+  client's fault, which is why it was grouped with the bad requests, but no request this crate
+  serves can reach that variant: a JSON body is deserialized by axum's `Json` extractor, which
+  rejects with its own `400` before the handler is called, and a query string arrives as
+  `ApiError::InvalidQueryParams`. What is left is the server failing to serialize a value of
+  its own, which the client can do nothing about and cannot fix by retrying differently. This
+  settles the standing TODO on the variant, which assumed it had to be split into a
+  deserialization `400` and a serialization `500` — the deserialization half never arrives, so
+  there is nothing to split. The status decision now follows `error_set` membership exactly:
+  every `IOError` variant is a `500`, and a variant that can be the client's fault belongs in
+  `ValidationError` or inline on `ApiError` instead. A consumer asserting `400` on a serde
+  failure, or funnelling its own deserialization errors through `ApiError::Serde` to get one,
+  has to change: raise the client-caused case as its own variant rather than reusing this one
 - **Breaking.** A composite primary key is now a generated `{Name}PrimaryKey` struct rather
   than a tuple, so `axum::extract::Path` binds each URL segment **by name**. A tuple is
   filled from the segments left to right with no name matching, so a route declaring them in

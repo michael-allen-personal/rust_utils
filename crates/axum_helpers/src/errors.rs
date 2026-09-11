@@ -15,7 +15,15 @@ error_set! {
         /// `?limit=abc`, or a cursor type whose `Deserialize` rejected what it was handed.
         InvalidQueryParams(axum::extract::rejection::QueryRejection),
     } || IOError || ValidationError
+    /// The server's own I/O failing, as opposed to anything the client got wrong. Both
+    /// variants are therefore a `500`, and a variant that could be the client's fault
+    /// belongs in [`ValidationError`] or inline on [`ApiError`] instead.
     IOError := {
+        /// A `serde_json` failure, which is a `500` despite looking like the client's
+        /// fault: no request this crate serves can reach it. A JSON body is deserialized
+        /// by axum's `Json` extractor, which rejects with its own `400` before the handler
+        /// is called, and a query string arrives as [`ApiError::InvalidQueryParams`]. What
+        /// is left is this process failing to serialize a value of its own.
         Serde(serde_json::Error),
         Sql(sqlx::Error),
     }
@@ -67,15 +75,12 @@ impl From<ApiError> for ApiErrorResponse {
     fn from(value: ApiError) -> Self {
         match value {
             ApiError::NotFoundError => ApiErrorResponse::NotFound,
-            // TODO: `Serde` is the odd one here. Figure out a better way to differentiate
-            // serialization vs deserialization, as a deserialization error should throw a 400
-            // and a serialization error should throw a 500
-            ApiError::Serde(_)
-            | ApiError::InvalidPaginationLimit { .. }
-            | ApiError::InvalidQueryParams(_) => {
+            ApiError::InvalidPaginationLimit { .. } | ApiError::InvalidQueryParams(_) => {
                 ApiErrorResponse::BadRequestWithMessage(value.to_string())
             }
-            ApiError::Sql(_) => ApiErrorResponse::InternalServerErrorWithMessage(value.to_string()),
+            ApiError::Serde(_) | ApiError::Sql(_) => {
+                ApiErrorResponse::InternalServerErrorWithMessage(value.to_string())
+            }
         }
     }
 }
