@@ -11,14 +11,42 @@ pub type Result<T, E = ApiError> = std::result::Result<T, E>;
 error_set! {
     ApiError := {
         NotFoundError,
-    } || IOError
+        /// A query string axum's `Query` extractor could not deserialize — an unparseable
+        /// `?limit=abc`, or a cursor type whose `Deserialize` rejected what it was handed.
+        InvalidQueryParams(axum::extract::rejection::QueryRejection),
+    } || IOError || ValidationError
     IOError := {
         Serde(serde_json::Error),
         Sql(sqlx::Error),
     }
+    /// What *validation* rejects about a request, as opposed to anything that went wrong
+    /// serving it. A subset rather than inline variants so a validation function can
+    /// return only what it can actually produce and widen into [`ApiError`] with `?`.
+    ///
+    /// `PartialEq` is derivable here and not on `ApiError`, whose `sqlx`, `serde_json` and
+    /// `QueryRejection` sources are not comparable; it is what lets a validation result be
+    /// asserted with `assert_eq!` rather than `matches!`. Keeping it derivable is the
+    /// constraint on what may join this set.
+    #[derive(PartialEq, Eq)]
+    ValidationError := {
+        #[display("`limit` must be between 1 and {max}, got {requested}")]
+        InvalidPaginationLimit { requested: u16, max: u16 },
+    }
 }
 
 impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        ApiErrorResponse::from(self).into_response()
+    }
+}
+
+impl IntoResponse for IOError {
+    fn into_response(self) -> Response {
+        ApiErrorResponse::from(self).into_response()
+    }
+}
+
+impl IntoResponse for ValidationError {
     fn into_response(self) -> Response {
         ApiErrorResponse::from(self).into_response()
     }
@@ -39,12 +67,28 @@ impl From<ApiError> for ApiErrorResponse {
     fn from(value: ApiError) -> Self {
         match value {
             ApiError::NotFoundError => ApiErrorResponse::NotFound,
-            // TODO: Figure out a better way to differentiate serialization vs deserialization, as
-            // a deserialization error should throw a 400 and a serialization error should throw a
-            // 500
-            ApiError::Serde(_) => ApiErrorResponse::BadRequestWithMessage(value.to_string()),
+            // TODO: `Serde` is the odd one here. Figure out a better way to differentiate
+            // serialization vs deserialization, as a deserialization error should throw a 400
+            // and a serialization error should throw a 500
+            ApiError::Serde(_)
+            | ApiError::InvalidPaginationLimit { .. }
+            | ApiError::InvalidQueryParams(_) => {
+                ApiErrorResponse::BadRequestWithMessage(value.to_string())
+            }
             ApiError::Sql(_) => ApiErrorResponse::InternalServerErrorWithMessage(value.to_string()),
         }
+    }
+}
+
+impl From<IOError> for ApiErrorResponse {
+    fn from(value: IOError) -> Self {
+        ApiErrorResponse::from(ApiError::from(value))
+    }
+}
+
+impl From<ValidationError> for ApiErrorResponse {
+    fn from(value: ValidationError) -> Self {
+        ApiErrorResponse::from(ApiError::from(value))
     }
 }
 

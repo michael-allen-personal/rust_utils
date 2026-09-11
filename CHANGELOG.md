@@ -27,7 +27,7 @@
   bound also makes `with_key` a provided method: an implementor writes nothing but the
   associated type
 - `#[derive(macros::Record)]`: a superset of `PrimaryKey` that also generates `{Name}Body`
-  from the fields *not* marked `#[macros(primary_key)]`, both association impls, and both
+  from the fields _not_ marked `#[macros(primary_key)]`, both association impls, and both
   `From` conversions — `From<(PrimaryKey, Body)> for Record` and `From<Record> for Body`.
   Together those two make `record -> (key, body) -> record` expressible as a single
   round-trip assertion, which is the test that catches a field reassembled into the wrong
@@ -39,9 +39,9 @@
   comma, `body_derive` in a non-list form, or a directive on the wrong item — is a
   `compile_error!` naming what was found and what is accepted, rather than being ignored.
   Silence there was dangerous: a malformed `#[macros(primary_key,)]` used to demote the
-  field out of the key and *into* the generated body, leaking the key into the request body
+  field out of the key and _into_ the generated body, leaking the key into the request body
 - `sql_traits::HasUpdateFields` and `sql_traits::UpdateFields`: a pair of traits associating
-  a record with the type holding a *partial* set of its non-key fields, mirroring
+  a record with the type holding a _partial_ set of its non-key fields, mirroring
   `HasRequestBody`/`RequestBody` exactly. `UpdateFields::Record` is bound
   `HasUpdateFields<UpdateFields = Self>`, so the pairing is mutual and cannot drift, and
   that bound makes `apply` a provided method — an implementor writes the associated type
@@ -54,13 +54,13 @@
   "clear this column" into "leave it alone". Public only because generated code has to name
   it. `serde` is consequently a dependency of `sql_traits`, and is re-exported alongside
   `sqlx` and `async_trait`
-- `#[derive(macros::Update)]`: generates `{Name}Update` from the fields *not* marked
+- `#[derive(macros::Update)]`: generates `{Name}Update` from the fields _not_ marked
   `#[macros(primary_key)]`, each wrapped in one more `Option` than the record has — `String`
   becomes `Option<String>`, `Option<i32>` becomes `Option<Option<i32>>` — plus both
   association impls. Name its derives with `#[macros(update_derive(...))]`, the counterpart
   to `body_derive`. A field whose type is syntactically `Option<..>` also gets
   `#[serde(default, deserialize_with = "::sql_traits::double_option")]`, which is what makes
-  an explicit `null` clear the column. A type *alias* for `Option<T>` cannot be recognized —
+  an explicit `null` clear the column. A type _alias_ for `Option<T>` cannot be recognized —
   no proc macro can resolve one — and such a field simply loses the ability to be cleared;
   it is never a type error, because the generated field type is correct either way.
   Designed to sit alongside `#[derive(macros::Record)]`, which is what supplies the
@@ -87,6 +87,89 @@
   generated body, which then rejects a key-bearing payload with `422`. The attribute is
   deliberately not stripped — an explicit opt-in to strictness is honoured. Bundled into
   `BasicCrudRoutes`, which now covers every CRUD operation
+- `sql_traits::Page`, `sql_traits::PaginationParams`, and the offset and cursor parameter and
+  metadata types, plus `sql_traits::ListRecordsPaginated<P>` and
+  `sql_traits::ListRecordsWherePaginated<T, P>`. Two traits rather than four, because the
+  pagination mode is the type parameter `P`: a record type offering both modes implements the
+  same trait at `OffsetParams` and at `CursorParams<C>`. `P::Pagination` is the metadata the
+  response carries, which is what lets one route handler serve every mode — a total or a next
+  cursor can only come from the query that fetched the rows, never from HTTP code afterwards.
+  `CursorPagination<C>` is generic over the cursor so `next` goes back out as the type that came
+  in, and an implementor whose cursor is a row id allocates nothing in either direction. `Page`,
+  `OffsetPagination` and `CursorPagination<C>` derive `Deserialize` as well as `Serialize`, so a
+  consumer writing a Rust client — or an integration test driving their own service over HTTP —
+  can parse the envelope back into the same types the handler sent, rather than hand-rolling a
+  mirror of it, and `PartialEq`/`Eq` so what was parsed back can be compared with `assert_eq!`
+  rather than field by field. None of those derives constrains the record or metadata type: a
+  derive generates a bounded impl, not a requirement on the struct, so `Page<T, M>` is comparable
+  _where_ `T` and `M` are and is otherwise an ordinary `Page`. A record that is `Serialize`-only
+  still builds one and still serves it on the way out, costing nothing for the added derives. The doc comments carry
+  the four contracts the compiler cannot: a cursor needs a total order, `next` comes from a
+  `limit + 1` fetch, `total` is `Some` iff the request asked, and no limit is enforced in this
+  crate — and, for an impl whose cursor is opaque, that decoding belongs in the cursor type's own
+  `Deserialize`, where a malformed cursor becomes a query-string rejection and a `400` instead of
+  the `500` every `sqlx::Error` maps to. `ListRecords` and `ListRecordsWhere<T>` are untouched — a
+  consumer does nothing unless it opts in
+- `axum_helpers::ListRecordsPaginatedRoute<Q>` and
+  `axum_helpers::ListRecordsWherePaginatedRoute<T, Q>`, with the query-string types
+  `OffsetParamsQuery<DEFAULT_LIMIT, MAX_LIMIT>` and `CursorParamsQuery<C, DEFAULT_LIMIT, MAX_LIMIT>`
+  and the `PaginationQuery` trait pairing each with the validated parameters it resolves to.
+  Pagination is a separate route trait rather than a mode of `ListRecordsRoute`, so a response is
+  never sometimes an array and sometimes an object: a type opts in by naming the trait, and then
+  every response is an envelope, empty pages included. The limit policy is const generic rather
+  than a pair of associated consts because that keeps the query-to-params conversion an
+  infallible, total `From` — the default limit is stated exactly once, in `Default`, and
+  `validate` reads the maximum off the type instead of having it threaded in. **Neither const
+  parameter has a default**, so both numbers are always written together, and the crate's own
+  policy arrives under a name: `DefaultOffsetParamsQuery` and `DefaultCursorParamsQuery<C>`, both
+  50 per page and 200 at most. Parameter defaults would make _partial_ specification legal and
+  silently wrong — `OffsetParamsQuery<10>` reads as "cap this route at 10" and would mean a
+  default of 10 paired with the inherited maximum of 200, a route serving twenty times the
+  intended page size, with nothing incoherent for the policy assertion to catch. That is the same
+  positional-and-silently-wrong failure this workspace rejected tuple composite keys for, so the
+  named aliases are the only way to get the bare form. A transposed or zero-defaulted
+  `<DEFAULT, MAX>` pair fails to build, as a post-monomorphization error: `cargo build` and
+  `cargo test` report it, and `cargo check` — or an editor running it — does not, so it is caught
+  on a real build the way the rest of this workspace's generated-code failures are. `limit` is
+  consequently a plain `u16` rather than an `Option`: the container's `serde` default comes from
+  _this type's_ `Default`, so a type whose maximum sits below the crate-wide default still serves
+  a request that names no limit, which a crate-wide serde default could not. That attribute has to
+  name its path — a bare `#[serde(default)]` panics `serde_derive` on a const-generic struct —
+  which makes the struct and const parameter names load-bearing, as
+  `crates/axum_helpers/CLAUDE.md` records; removing the parameter defaults does not change those
+  strings. The handlers extract `Result<Query<Q>, QueryRejection>` so an unparseable query string
+  answers `{"message": "..."}` like every other error here instead of axum's plain-text default.
+  The policy bounds page _size_ only: there is deliberately no ceiling on `offset`, and a consumer
+  who needs to bound how deep a request may page does it in their own query
+- **Breaking.** `axum_helpers::ValidationError`, a new `error_set!` subset holding
+  `InvalidPaginationLimit { requested, max }`, which is also therefore a new `ApiError` variant.
+  `error_set!` generates a plain enum with no `#[non_exhaustive]`, so a consumer that matches
+  `ApiError` exhaustively must add an arm or a wildcard. It is a subset rather than inline
+  variants so `PaginationQuery::validate` returns only the error it can actually produce, and
+  the handler converts it with `ApiError::from`; the status decision stays in the single
+  `From<ApiError> for ApiErrorResponse` match where every other status is made
+- **Breaking.** `ApiError::InvalidQueryParams(axum::extract::rejection::QueryRejection)`, the
+  variant a query string axum could not deserialize arrives as — an unparseable `?limit=abc`, or
+  a cursor type whose own `Deserialize` rejected what it was handed. Another exhaustive `match`
+  on `ApiError` to update, for the same reason as above. It is inline on `ApiError` rather than
+  in `ValidationError` despite being the client's fault, and both reasons come from the source
+  type: `QueryRejection` is neither `PartialEq` nor `Eq`, so holding it would cost `ValidationError`
+  the derive its `assert_eq!` assertions depend on, and no validation function can _produce_ one
+  — it arrives already formed from the extractor — so putting it in the subset would widen
+  `PaginationQuery::validate`'s return type to something it can never return. What `ValidationError`
+  collects is therefore what validation produces, comparably, not everything the client caused.
+  The variant needs no arm of its own in `From<ApiError> for ApiErrorResponse`: `error_set`
+  renders an undecorated source variant as the source's own `Display`, and a `QueryRejection`'s
+  `Display` is by definition its `body_text()`, so the client gets exactly the words axum would
+  have sent as plain text, wrapped in this crate's `{"message": "..."}` object. `QueryRejection`
+  is `#[non_exhaustive]` and every variant is a `400` today; one carrying another status would
+  make that arm `FlexibleError(rejection.status(), rejection.body_text())`, so it is worth a look
+  on an axum upgrade
+- `IntoResponse` and `Into<ApiErrorResponse>` for `axum_helpers::IOError` and
+  `axum_helpers::ValidationError`, so a consumer's handler can return the narrow error it actually
+  produces and have it render itself, rather than widening to `ApiError` by hand at every call
+  site. Both route through `From<ApiError>`, so a subset and the whole cannot answer different
+  statuses for the same variant
 
 ### Changed
 
@@ -103,7 +186,7 @@
   the handler runs. The struct takes the record's own visibility, each field keeps the
   visibility it has on the record, and it always derives `Clone`, `Debug`, `PartialEq` and
   `serde::Deserialize` — `Deserialize` is what every route trait bounds the key on, so it is
-  emitted rather than asked for. The record's own attributes are deliberately *not*
+  emitted rather than asked for. The record's own attributes are deliberately _not_
   forwarded to it, unlike `{Name}Body` and `{Name}Update`: this type is addressed by path
   segments rather than by JSON, so a `serde` rename meant for a request body has no business
   renaming the segments a route must declare. A **single** marked field is unchanged —
@@ -113,7 +196,7 @@
   `primary_key.a` / `primary_key.b`, and a hand-written `impl GetRecord`/`DeleteRecord`/
   `UpdateRecord` binding the tuple to SQL binds the named fields instead. The name
   `{Name}PrimaryKey` is now reserved alongside `{Name}Body` and `{Name}Update`
-- **Breaking.** A composite primary key on a *tuple* struct is a compile error naming the
+- **Breaking.** A composite primary key on a _tuple_ struct is a compile error naming the
   shape that works, rather than falling back to the old positional binding. Unnamed fields
   give a path segment nothing to bind to, so it is the one place the bug above could not be
   fixed. A single marked field on a tuple struct is unaffected
