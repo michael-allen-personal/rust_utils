@@ -9,7 +9,7 @@
 use serde::de::DeserializeOwned;
 use sql_traits::{CursorParams, OffsetParams, PaginationParams};
 
-use crate::RequestError;
+use crate::ValidationError;
 
 /// A query type paired with the validated parameters it resolves to.
 ///
@@ -23,7 +23,7 @@ pub trait PaginationQuery: Sized + Into<Self::Params> + DeserializeOwned + Send 
     /// Rejects a limit outside the range this type's parameters allow.
     ///
     /// Takes no arguments because the policy is in the type.
-    fn validate(&self) -> Result<(), RequestError>;
+    fn validate(&self) -> Result<(), ValidationError>;
 }
 
 /// Offset-based pagination parameters as they arrive on a URL.
@@ -126,9 +126,9 @@ const fn assert_policy_coherent(default_limit: u16, max_limit: u16) {
 /// The limit check both query types perform. Shared for the same reason as
 /// [`assert_policy_coherent`]: it reads only the limit, so neither wire shape's own fields enter
 /// into it, and one copy means one place to change the rule.
-fn validate_limit(limit: u16, max_limit: u16) -> Result<(), RequestError> {
+fn validate_limit(limit: u16, max_limit: u16) -> Result<(), ValidationError> {
     if limit == 0 || limit > max_limit {
-        return Err(RequestError::InvalidPaginationLimit {
+        return Err(ValidationError::InvalidPaginationLimit {
             requested: limit,
             max: max_limit,
         });
@@ -195,7 +195,7 @@ impl<const DEFAULT_LIMIT: u16, const MAX_LIMIT: u16> PaginationQuery
 {
     type Params = OffsetParams;
 
-    fn validate(&self) -> Result<(), RequestError> {
+    fn validate(&self) -> Result<(), ValidationError> {
         let () = Self::POLICY_IS_COHERENT;
         validate_limit(self.limit, MAX_LIMIT)
     }
@@ -208,7 +208,7 @@ where
 {
     type Params = CursorParams<C>;
 
-    fn validate(&self) -> Result<(), RequestError> {
+    fn validate(&self) -> Result<(), ValidationError> {
         let () = Self::POLICY_IS_COHERENT;
         validate_limit(self.limit, MAX_LIMIT)
     }

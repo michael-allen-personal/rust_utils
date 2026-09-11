@@ -25,8 +25,16 @@ pub trait PaginationParams {
 /// empty page — there is no shape that is sometimes an array and sometimes an object.
 ///
 /// `Deserialize` as well as `Serialize`, so a Rust client or an integration test can parse a
-/// response back into the same envelope the service sent. Derived bounds apply only where they
-/// are used, so a record that is `Serialize`-only still serves this on the way out.
+/// response back into the same envelope the service sent, and `PartialEq`/`Eq` so the parsed
+/// result can be compared with `assert_eq!` rather than field by field.
+///
+/// **None of those derives constrains `T` or `M`.** A derive generates a bounded impl, not a
+/// requirement on the struct: `Page<T, M>` is `PartialEq` *where* `T: PartialEq, M: PartialEq`
+/// and is otherwise an ordinary `Page` that simply cannot be compared. A record that is
+/// `Serialize`-only still builds one and still serves it on the way out — which is exactly what
+/// `sql_traits/tests/pagination.rs` does, where `Widget` derives nothing but `Serialize`. So
+/// derive freely here; the cost lands only on a use site that asks for the operation, and
+/// removing a derive later is a breaking change for every consumer that did.
 #[derive(Debug, Clone, PartialEq, Eq, ::serde::Serialize, ::serde::Deserialize)]
 pub struct Page<T, M> {
     /// The records in this page.

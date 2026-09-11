@@ -47,19 +47,16 @@ fn not_found() -> Response {
 /// A bare `Query<Q>` would render its rejection as axum's plain-text default, which would make an
 /// unparseable `?limit=abc` the one error here whose body is not a message object.
 ///
-/// The `Err` is a `Response` because that is what a handler returns; `clippy::result_large_err`
-/// fires on its size, and boxing it would only move the allocation into the error path of every
-/// caller that immediately returns it.
-#[allow(clippy::result_large_err)]
+/// The `Err` is an [`ApiError`] rather than a rendered `Response` because both failures are
+/// already variants of it: the rejection widens through `ApiError::InvalidQueryParams` and the
+/// limit check through `ValidationError`, so each arrives with `?` and the rendering stays in the
+/// one `From<ApiError>` impl. It is also what keeps `clippy::result_large_err` quiet — a
+/// `Response` is 128 bytes, the lint's own threshold, and an `ApiError` is 48.
 fn validated_query<Q: PaginationQuery>(
     query: Result<Query<Q>, QueryRejection>,
-) -> Result<Q, Response> {
-    let Query(params) = query.map_err(|rejection| {
-        ApiErrorResponse::BadRequestWithMessage(rejection.body_text()).into_response()
-    })?;
-    params
-        .validate()
-        .map_err(|error| ApiError::from(error).into_response())?;
+) -> Result<Q, ApiError> {
+    let Query(params) = query?;
+    params.validate()?;
     Ok(params)
 }
 
@@ -185,7 +182,7 @@ where
     ) -> Response {
         let params = match validated_query(query) {
             Ok(params) => params,
-            Err(response) => return response,
+            Err(error) => return error.into_response(),
         };
 
         Self::list_records_paginated(&pool, params.into())
@@ -244,7 +241,7 @@ where
     ) -> Response {
         let params = match validated_query(query) {
             Ok(params) => params,
-            Err(response) => return response,
+            Err(error) => return error.into_response(),
         };
 
         Self::list_records_where_paginated(&pool, path_params.into(), params.into())

@@ -310,7 +310,7 @@ fn a_request_error_widens_into_an_api_error() {
     /// widens it, which is the only thing being asserted.
     fn widen(limit: u16) -> Result<(), axum_helpers::ApiError> {
         if limit > 100 {
-            Err(axum_helpers::RequestError::InvalidPaginationLimit {
+            Err(axum_helpers::ValidationError::InvalidPaginationLimit {
                 requested: limit,
                 max: 100,
             })?;
@@ -353,6 +353,33 @@ async fn an_invalid_limit_answers_400_naming_the_maximum_and_the_request() {
     assert!(
         body.starts_with(r#"{"message":"#),
         "every error body in this crate is a message object, got {body}"
+    );
+}
+
+/// The subsets render themselves, so a consumer's own handler can return the narrow error it
+/// actually produces instead of widening by hand. Each must land on the same status its
+/// variants get through `ApiError`, which is the thing that could silently drift: these go
+/// through their own `IntoResponse`, not the one the route handlers use.
+#[tokio::test]
+async fn each_error_subset_renders_itself_at_the_status_its_variants_get() {
+    use axum_helpers::axum::response::IntoResponse;
+
+    let request_error = axum_helpers::ValidationError::InvalidPaginationLimit {
+        requested: 500,
+        max: 100,
+    }
+    .into_response();
+    assert_eq!(
+        request_error.status(),
+        StatusCode::BAD_REQUEST,
+        "a client-caused error is a 400 whether it renders itself or goes through ApiError"
+    );
+
+    let io_error = axum_helpers::IOError::Sql(sqlx::Error::RowNotFound).into_response();
+    assert_eq!(
+        io_error.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "every sqlx error is a 500, this path included"
     );
 }
 

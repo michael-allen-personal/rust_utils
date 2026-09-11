@@ -99,6 +99,11 @@ Four things the doc comments carry, each a silent wrong answer rather than a com
   policy and a direct non-HTTP caller is trusted. Do not clamp — a silently reduced page is
   indistinguishable from a short last page.
 
+Neither `OffsetParams` nor `CursorParams<C>` has a `Default`, deliberately. They carry no limit
+policy, so any default limit here would be a magic number every consumer inherits — the
+crate-wide fallback that `axum_helpers`' const-generic query types exist to avoid. A caller
+building parameters by hand states the limit it means.
+
 `total: u32` means an implementation casts `count(*) OVER ()`'s `i64`. That is the
 implementation's business, not the trait's.
 

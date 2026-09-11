@@ -80,7 +80,7 @@ fn an_explicit_zero_survives_and_is_then_rejected() {
     assert_eq!(params.limit, 0);
     assert_eq!(
         params.validate(),
-        Err(axum_helpers::RequestError::InvalidPaginationLimit {
+        Err(axum_helpers::ValidationError::InvalidPaginationLimit {
             requested: 0,
             max: 25
         })
@@ -92,7 +92,7 @@ fn the_maximum_is_inclusive() {
     assert_eq!(offset("/widgets?limit=25").validate(), Ok(()));
     assert_eq!(
         offset("/widgets?limit=26").validate(),
-        Err(axum_helpers::RequestError::InvalidPaginationLimit {
+        Err(axum_helpers::ValidationError::InvalidPaginationLimit {
             requested: 26,
             max: 25
         })

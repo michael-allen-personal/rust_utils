@@ -60,6 +60,27 @@ and a key field no segment names is a `400` from the extractor before the handle
 
 This is why the generated key type is a struct and not a tuple — see `crates/macros/CLAUDE.md`.
 
+## Pagination is a separate route trait, never a mode of `ListRecordsRoute`
+
+`ListRecordsRoute` answers a bare array forever; `ListRecordsPaginatedRoute` answers an envelope
+always — `{"data": [...], "pagination": {...}}`, empty pages included, never a `204`. A response
+is never sometimes an array and sometimes an object, and nothing branches on whether pagination
+parameters were present: a type opts in by naming the trait, which is the same reason these are
+traits with provided methods rather than free functions.
+
+A `Link` header was the alternative considered, and was rejected. It cannot carry a total, so
+offset mode would need a second non-standard header regardless; it obliges every client to parse
+RFC 8288 before it can follow a page; and building a correct absolute URL needs `OriginalUri`
+plus the mount prefix and any proxy rewriting, none of which a provided method reliably knows.
+The envelope is also the only mechanism that serves both modes with one shape.
+
+A record type offering both modes has two impls of the same provided method, so its mount site
+needs a turbofish:
+`<Gadget as ListRecordsPaginatedRoute<DefaultOffsetParamsQuery>>::list_records_paginated_route`.
+That is the existing situation for the `*Where` family rather than a new problem, but it is what
+offering both modes on one type costs at the router. `tests/route_traits.rs` mounts such a type,
+so the disambiguation itself is under test.
+
 ## The limit policy lives in the query type
 
 `OffsetParamsQuery<DEFAULT_LIMIT, MAX_LIMIT>` carries its policy as const generic parameters, so
@@ -87,7 +108,9 @@ It is a post-monomorphization error, so the diagnostic points into the handler b
 instantiation chain back to the mount site — and, for the same reason, **only a real build
 reports it.** `cargo build` and `cargo test` evaluate the constant; `cargo check` and an editor
 running it do not, so a transposed pair looks fine in the editor and fails in CI. This is the
-same reason the root `CLAUDE.md` says `cargo check` is not a substitute for `cargo test` here.
+same reason the root `CLAUDE.md` says `cargo check` is not a substitute for `cargo test` here. No
+test asserts the failure: that would need `trybuild` as a dev-dependency, which the
+`[dev-dependencies]` comment convention would have to justify for a single compile-fail case.
 
 **The container `serde` attribute names its path as a string.** `#[serde(default = "OffsetParamsQuery::<DEFAULT_LIMIT, MAX_LIMIT>::default")]`
 is not a style choice: a bare `#[serde(default)]` makes `serde_derive` add a `Self: Default`
@@ -118,9 +141,11 @@ unparseable `?limit=abc` the one error in this crate whose body is not `{"messag
 Extracting the `Result` moves that rendering into the handler, once, for every implementor —
 the same argument as the empty-update `400`.
 
-Both paginated handlers unwrap it through the private `validated_query`, which renders the
+Both paginated handlers unwrap it through the private `validated_query`, which widens the
 rejection and runs `validate` in one place — the same role `optional_record_response` plays for
 the fetch-one handlers. A new paginated handler calls it rather than repeating the two branches.
+It hands back an `ApiError` rather than a finished `Response`, so the rendering stays in
+`From<ApiError> for ApiErrorResponse` with every other error; see **Errors** below.
 
 ## The `*Where` family has no derive
 
@@ -136,11 +161,36 @@ status-plus-JSON-message rendering, and every error body is `{"message": "..."}`
 errors become `500`, serde errors `400`. There is a standing TODO on that last one: serde
 cannot currently distinguish deserialization (a genuine `400`) from serialization (a `500`).
 
-`RequestError` is the client-input subset: `InvalidPaginationLimit { requested, max }` today. It
+`ValidationError` is the validation subset: `InvalidPaginationLimit { requested, max }` today. It
 is a subset rather than inline `ApiError` variants so `PaginationQuery::validate` can return only
 what it can actually produce; the handler converts it with `ApiError::from`. Note
 `UpdateRoute`'s empty-body `400` is still an inline `ApiErrorResponse` and is the standing
 exception to that.
+
+**What may join `ValidationError`, and what may not.** It derives `PartialEq`/`Eq`, which is what
+lets `pagination_params.rs` assert a validation result with `assert_eq!` instead of `matches!`,
+so a variant holding a source type that is not comparable would cost every one of those
+assertions. `ApiError::InvalidQueryParams(QueryRejection)` is the case that came up and the
+reason it is inline on `ApiError` despite being the client's fault: `QueryRejection` is neither
+`PartialEq` nor `Eq`, and no validation function can produce one — it arrives already formed
+from the extractor, so putting it in the subset would widen `validate`'s return type to
+something it can never return. Client-caused is the theme of `ValidationError`, not its rule; the
+rule is *what validation produces, comparably*.
+
+It needs no arm of its own in `From<ApiError> for ApiErrorResponse`. `error_set` renders an
+undecorated source variant as the source's own `Display`, and a `QueryRejection`'s `Display` is
+by definition its `body_text()` — so `value.to_string()` yields exactly the string axum would
+have sent as plain text, and it lands in this crate's message object instead. If a future
+`QueryRejection` variant carries a status other than `400`, that arm becomes
+`FlexibleError(rejection.status(), rejection.body_text())`; it is `#[non_exhaustive]`, so this
+is worth rechecking on an axum upgrade.
+
+`validated_query` returns `Result<Q, ApiError>` and not a rendered `Response` for that reason —
+both failures are already `ApiError` variants, so each arrives with `?` and the rendering stays
+in the one `From` impl. It is also what keeps `clippy::result_large_err` quiet without an
+`#[allow]`: a `Response` is 128 bytes, the lint's own threshold, and an `ApiError` is 48. If a
+future variant pushes it past 128 the lint returns, and the fix is to shrink the variant, not to
+silence it.
 
 ## Tests
 
