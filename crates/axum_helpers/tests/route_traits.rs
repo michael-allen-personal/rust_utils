@@ -32,8 +32,8 @@ use axum_helpers::sql_traits::{
 use axum_helpers::sqlx::{self, PgPool};
 use axum_helpers::{
     BulkCreateRoute, CreateRoute, DeleteRecordsWhereRoute, DeleteRoute, GetLatestRoute,
-    GetRecordRoute, GetRecordWhereRoute, ListRecordsRoute, ListRecordsWhereRoute, ReplaceRoute,
-    UpdateRoute,
+    GetRecordRoute, GetRecordWhereRoute, ListRecordsPaginatedRoute, ListRecordsRoute,
+    ListRecordsWherePaginatedRoute, ListRecordsWhereRoute, ReplaceRoute, UpdateRoute,
 };
 
 /// The primary key the fixtures treat as matching no row.
@@ -255,6 +255,125 @@ impl DeleteRecordsWhereRoute<GadgetFilter> for Gadget {
     type PathParams = GadgetFilter;
 }
 
+// --- The paginated list family ---------------------------------------------------------
+//
+// Two modes on one record type, which is the case that needs a turbofish at the mount site
+// below: both impls carry the same provided method name.
+
+#[async_trait]
+impl axum_helpers::sql_traits::ListRecordsPaginated<axum_helpers::sql_traits::OffsetParams>
+    for Gadget
+{
+    async fn list_records_paginated(
+        _pool: &PgPool,
+        params: axum_helpers::sql_traits::OffsetParams,
+    ) -> Result<
+        axum_helpers::sql_traits::Page<Self, axum_helpers::sql_traits::OffsetPagination>,
+        sqlx::Error,
+    > {
+        Ok(axum_helpers::sql_traits::Page {
+            data: Vec::new(),
+            pagination: axum_helpers::sql_traits::OffsetPagination {
+                offset: params.offset,
+                limit: params.limit,
+                total: None,
+            },
+        })
+    }
+}
+
+#[async_trait]
+impl axum_helpers::sql_traits::ListRecordsPaginated<axum_helpers::sql_traits::CursorParams<i64>>
+    for Gadget
+{
+    async fn list_records_paginated(
+        _pool: &PgPool,
+        params: axum_helpers::sql_traits::CursorParams<i64>,
+    ) -> Result<
+        axum_helpers::sql_traits::Page<Self, axum_helpers::sql_traits::CursorPagination<i64>>,
+        sqlx::Error,
+    > {
+        Ok(axum_helpers::sql_traits::Page {
+            data: Vec::new(),
+            pagination: axum_helpers::sql_traits::CursorPagination {
+                limit: params.limit,
+                next: None,
+            },
+        })
+    }
+}
+
+impl ListRecordsPaginatedRoute<axum_helpers::DefaultOffsetParamsQuery> for Gadget {}
+
+impl ListRecordsPaginatedRoute<axum_helpers::DefaultCursorParamsQuery<i64>> for Gadget {}
+
+#[async_trait]
+impl
+    axum_helpers::sql_traits::ListRecordsWherePaginated<
+        GadgetFilter,
+        axum_helpers::sql_traits::OffsetParams,
+    > for Gadget
+{
+    async fn list_records_where_paginated(
+        _pool: &PgPool,
+        _where_params: GadgetFilter,
+        params: axum_helpers::sql_traits::OffsetParams,
+    ) -> Result<
+        axum_helpers::sql_traits::Page<Self, axum_helpers::sql_traits::OffsetPagination>,
+        sqlx::Error,
+    > {
+        Ok(axum_helpers::sql_traits::Page {
+            data: Vec::new(),
+            pagination: axum_helpers::sql_traits::OffsetPagination {
+                offset: params.offset,
+                limit: params.limit,
+                total: None,
+            },
+        })
+    }
+}
+
+impl ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::DefaultOffsetParamsQuery>
+    for Gadget
+{
+    type PathParams = GadgetFilter;
+}
+
+// The fourth combination: the filtered trait in cursor mode. Both route traits in both modes are
+// mounted below, because axum's `Handler` requirements are checked per monomorphization — a
+// `Router::route` that accepts the offset instantiation of this trait says nothing about the
+// cursor one.
+#[async_trait]
+impl
+    axum_helpers::sql_traits::ListRecordsWherePaginated<
+        GadgetFilter,
+        axum_helpers::sql_traits::CursorParams<i64>,
+    > for Gadget
+{
+    async fn list_records_where_paginated(
+        _pool: &PgPool,
+        _where_params: GadgetFilter,
+        params: axum_helpers::sql_traits::CursorParams<i64>,
+    ) -> Result<
+        axum_helpers::sql_traits::Page<Self, axum_helpers::sql_traits::CursorPagination<i64>>,
+        sqlx::Error,
+    > {
+        Ok(axum_helpers::sql_traits::Page {
+            data: Vec::new(),
+            pagination: axum_helpers::sql_traits::CursorPagination {
+                limit: params.limit,
+                next: None,
+            },
+        })
+    }
+}
+
+impl ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::DefaultCursorParamsQuery<i64>>
+    for Gadget
+{
+    type PathParams = GadgetFilter;
+}
+
 /// Every handler mounted on one router. If any of them stops satisfying axum's `Handler`
 /// trait this stops compiling, which is the whole assertion.
 fn build_router() -> Router<PgPool> {
@@ -278,6 +397,22 @@ fn build_router() -> Router<PgPool> {
         .route(
             "/owners/{owner_id}/gadgets",
             delete(<Gadget as DeleteRecordsWhereRoute<GadgetFilter>>::delete_records_where_route),
+        )
+        .route(
+            "/gadgets/paged",
+            get(<Gadget as ListRecordsPaginatedRoute<axum_helpers::DefaultOffsetParamsQuery>>::list_records_paginated_route),
+        )
+        .route(
+            "/gadgets/streamed",
+            get(<Gadget as ListRecordsPaginatedRoute<axum_helpers::DefaultCursorParamsQuery<i64>>>::list_records_paginated_route),
+        )
+        .route(
+            "/owners/{owner_id}/gadgets/paged",
+            get(<Gadget as ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::DefaultOffsetParamsQuery>>::list_records_where_paginated_route),
+        )
+        .route(
+            "/owners/{owner_id}/gadgets/streamed",
+            get(<Gadget as ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::DefaultCursorParamsQuery<i64>>>::list_records_where_paginated_route),
         )
 }
 

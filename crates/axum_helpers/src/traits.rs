@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use axum::{
-    extract::{self, Path, State},
+    extract::{self, Path, Query, State, rejection::QueryRejection},
     http::StatusCode,
     response::{self, IntoResponse, Response},
 };
@@ -10,10 +10,11 @@ use sqlx::PgPool;
 use sql_traits::{
     BulkInsertRecords, DeleteRecord, DeleteRecordsWhere, GetLatestRecord, GetRecord,
     GetRecordWhere, HasPrimaryKey, HasRequestBody, HasUpdateFields, InsertRecord, ListRecords,
-    ListRecordsWhere, ReplaceRecord, UpdateFields, UpdateRecord,
+    ListRecordsPaginated, ListRecordsWhere, ListRecordsWherePaginated, PaginationParams,
+    ReplaceRecord, UpdateFields, UpdateRecord,
 };
 
-use crate::{ApiError, ApiErrorResponse};
+use crate::{ApiError, ApiErrorResponse, PaginationQuery};
 
 /// Renders the `Result<Option<Record>, ApiError>` shape shared by every fetch-one route
 /// handler: `200 OK` with the record as JSON, `on_missing()` when the query matched no row,
@@ -38,6 +39,28 @@ fn no_content() -> Response {
 /// `404 Not Found`: the caller addressed a specific record and it does not exist.
 fn not_found() -> Response {
     ApiError::NotFoundError.into_response()
+}
+
+/// Unwraps a paginated route's query extractor: axum's own rejection and an out-of-range limit
+/// both become this crate's `{"message": …}` body, in one place for every implementor.
+///
+/// A bare `Query<Q>` would render its rejection as axum's plain-text default, which would make an
+/// unparseable `?limit=abc` the one error here whose body is not a message object.
+///
+/// The `Err` is a `Response` because that is what a handler returns; `clippy::result_large_err`
+/// fires on its size, and boxing it would only move the allocation into the error path of every
+/// caller that immediately returns it.
+#[allow(clippy::result_large_err)]
+fn validated_query<Q: PaginationQuery>(
+    query: Result<Query<Q>, QueryRejection>,
+) -> Result<Q, Response> {
+    let Query(params) = query.map_err(|rejection| {
+        ApiErrorResponse::BadRequestWithMessage(rejection.body_text()).into_response()
+    })?;
+    params
+        .validate()
+        .map_err(|error| ApiError::from(error).into_response())?;
+    Ok(params)
 }
 
 /// Axum route handler for fetching the most recent record.
@@ -114,6 +137,65 @@ pub trait ListRecordsRoute: ListRecords + serde::Serialize {
     }
 }
 
+/// Axum route handler for listing one page of records.
+///
+/// Returns `200 OK` with `{"data": [...], "pagination": {...}}`, or `400 Bad Request` if the
+/// query string is unparseable or asks for a limit outside the range `Q` allows.
+///
+/// The pagination mode is `Q`: `OffsetParamsQuery<..>` or `CursorParamsQuery<C, ..>`, each
+/// carrying its own default and maximum limit as const parameters. Neither takes a parameter
+/// default, so both numbers are always written; the crate's own policy has a name. A mount site
+/// names the mode, which is also where the policy is visible:
+///
+/// ```ignore
+/// impl ListRecordsPaginatedRoute<DefaultOffsetParamsQuery> for Widget {}     // 50 / 200
+/// impl ListRecordsPaginatedRoute<OffsetParamsQuery<20, 100>> for Invoice {}  // tuned
+/// ```
+///
+/// # Always an envelope, never a bare array
+///
+/// [`ListRecordsRoute`] answers a JSON array and is unaffected by this trait. A type opts into
+/// pagination by naming this one instead, and then every response is an envelope — including an
+/// empty page, which is `200` with an empty `data`, never a `204`. Nothing branches on whether
+/// the request carried pagination parameters.
+///
+/// # Why the query extractor is a `Result`
+///
+/// A bare `Query<Q>` rejection renders as axum's default plain-text body, which would make an
+/// unparseable `?limit=abc` the one error in this crate that is not `{"message": "..."}`.
+/// Extracting `Result<Query<Q>, QueryRejection>` moves that rendering here, once, for every
+/// implementor.
+///
+/// # Both modes on one type
+///
+/// A type may implement this trait for an offset query type *and* a cursor one. Both impls then
+/// carry the same provided-method name, so a mount site disambiguates:
+/// `<Widget as ListRecordsPaginatedRoute<DefaultOffsetParamsQuery>>::list_records_paginated_route`.
+/// That is the existing situation for the `*Where` family, not a new one.
+#[async_trait]
+pub trait ListRecordsPaginatedRoute<Q>: ListRecordsPaginated<Q::Params> + serde::Serialize
+where
+    Q: PaginationQuery,
+    <Q::Params as PaginationParams>::Pagination: serde::Serialize,
+{
+    // TODO: Add a function for logging
+    async fn list_records_paginated_route(
+        State(pool): State<PgPool>,
+        query: Result<Query<Q>, QueryRejection>,
+    ) -> Response {
+        let params = match validated_query(query) {
+            Ok(params) => params,
+            Err(response) => return response,
+        };
+
+        Self::list_records_paginated(&pool, params.into())
+            .await
+            .map_err(ApiError::from)
+            .map(|page| (StatusCode::OK, response::Json(page)))
+            .into_response()
+    }
+}
+
 /// Axum route handler for listing records matching a filter extracted from the URL path.
 ///
 /// Returns `200 OK` with the matching records as a JSON array.
@@ -129,6 +211,46 @@ pub trait ListRecordsWhereRoute<T: Send>: ListRecordsWhere<T> + serde::Serialize
             .await
             .map_err(ApiError::from)
             .map(|records| (StatusCode::OK, response::Json(records)))
+            .into_response()
+    }
+}
+
+/// Axum route handler for listing one page of the records matching a filter taken from the URL
+/// path.
+///
+/// Returns `200 OK` with `{"data": [...], "pagination": {...}}`, or `400 Bad Request` if the
+/// query string is unparseable or asks for a limit outside the range `Q` allows.
+///
+/// Everything in [`ListRecordsPaginatedRoute`]'s documentation applies: the envelope is
+/// unconditional, the pagination mode is `Q`, the query extractor is a `Result` so a rejection
+/// is rendered in this crate's error shape, and a type may implement the trait once per mode.
+///
+/// Like the rest of the `*Where` family, `PathParams` has to be chosen by the implementor —
+/// it cannot be inferred from the record — which is why no derive can emit this impl.
+#[async_trait]
+pub trait ListRecordsWherePaginatedRoute<T: Send, Q>:
+    ListRecordsWherePaginated<T, Q::Params> + serde::Serialize
+where
+    Q: PaginationQuery,
+    <Q::Params as PaginationParams>::Pagination: serde::Serialize,
+{
+    type PathParams: Into<T> + DeserializeOwned + Send + 'static;
+
+    // TODO: Add a function for logging
+    async fn list_records_where_paginated_route(
+        State(pool): State<PgPool>,
+        Path(path_params): Path<Self::PathParams>,
+        query: Result<Query<Q>, QueryRejection>,
+    ) -> Response {
+        let params = match validated_query(query) {
+            Ok(params) => params,
+            Err(response) => return response,
+        };
+
+        Self::list_records_where_paginated(&pool, path_params.into(), params.into())
+            .await
+            .map_err(ApiError::from)
+            .map(|page| (StatusCode::OK, response::Json(page)))
             .into_response()
     }
 }
