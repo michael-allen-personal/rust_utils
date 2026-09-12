@@ -1,8 +1,8 @@
 # sql_traits
 
-Database traits over `sqlx`/Postgres, plus the type-level associations the `macros` derives
-and the `axum_helpers` route traits are both built on. Every trait here is a contract a
-consumer implements; this crate holds no queries and opens no connections.
+Database traits generic over the `sqlx` driver, plus the type-level associations the
+`macros` derives and the `axum_helpers` route traits are both built on. Every trait here is
+a contract a consumer implements; this crate holds no queries and opens no connections.
 
 **Keep `axum` out.** The layering is one-way — `axum_helpers` depends on this crate, never
 the reverse — so a non-HTTP consumer can use the database traits alone. Anything about
@@ -10,9 +10,31 @@ status codes, extractors, or request shape belongs upstream in `axum_helpers`.
 
 `sqlx`, `serde` and `async_trait` are re-exported because their types appear in these
 signatures; see the root `CLAUDE.md` for why that matters and why generated code reaches
-`serde` as `::sql_traits::serde`. This crate does not pick a `sqlx` runtime feature — that
-is the consumer's choice. (`axum_helpers` enables `runtime-tokio` in its dev-dependencies
-only, for the same reason.)
+`serde` as `::sql_traits::serde`. This crate does not pick a `sqlx` runtime feature, and it
+enables no driver either — both are the consumer's choice. (`axum_helpers` enables
+`runtime-tokio`, `postgres` and `sqlite` in its dev-dependencies only, for the same reason.)
+The `postgres`/`sqlite`/`mysql`/`any` features on this crate do nothing but forward to the
+matching `sqlx` feature, so a consumer reaches its driver through the re-exported `sqlx`
+instead of declaring a second `sqlx` of its own just to flip one on.
+
+## `HasDatabase` is what makes every pool-taking trait generic
+
+`HasDatabase { type Database: sqlx::Database; }` associates a type with the one database its
+queries run against. The database travels as an associated type rather than a parameter on
+each trait, so a record names its database exactly once and the thirteen pool-taking traits
+in this crate (eleven here, two more in `pagination.rs`) all take
+`&Pool<<Self as HasDatabase>::Database>` — every trait's parameter list, and every
+`axum_helpers` mount site, stays exactly the shape it was before this type existed.
+
+**Deliberately not a supertrait of `HasPrimaryKey`.** The key/request-body/update-fields
+machinery — `HasPrimaryKey`, `HasRequestBody`/`RequestBody`, `HasUpdateFields`/
+`UpdateFields` — never touches a pool. Tying it to `HasDatabase` would force a consumer of
+those traits alone, one with no query to run, to name a database it does not have.
+
+`macros::Database` implements this from `#[macros(database = Postgres)]` (or `Sqlite`,
+`MySql`, `Any`) — see `crates/macros/CLAUDE.md`. The directive is required rather than
+defaulted, so a consumer always states which driver a record targets rather than inheriting
+one silently.
 
 ## The paired-trait pattern
 
@@ -91,10 +113,10 @@ Four things the doc comments carry, each a silent wrong answer rather than a com
 - **`next` comes from fetching `limit + 1` and dropping the extra.** Anything else guesses or
   pays for a second count.
 - **`total` is `Some` if and only if `include_total`.** The compiler cannot enforce an iff, so
-  it is a contract. It is exercised by the test fixture in
-  `axum_helpers/tests/route_responses.rs`, which is written to comply — that shows the envelope
-  carries the distinction, and says nothing about whether a consumer's impl honours it. Nothing
-  anywhere enforces it.
+  it is a contract. `tests/pagination.rs`'s `Entry` fixture exercises it against a real
+  in-memory database, and the fixture in `axum_helpers/tests/route_responses.rs` is written
+  to comply too — both show the envelope carries the distinction, and say nothing about
+  whether every consumer's impl honours it. Nothing anywhere enforces it.
 - **No limits are enforced here.** Parameters arrive already validated; `axum_helpers` owns the
   policy and a direct non-HTTP caller is trusted. Do not clamp — a silently reduced page is
   indistinguishable from a short last page.
@@ -118,7 +140,7 @@ than a no-op.
 
 ## Tests
 
-Five crates under `tests/`, each proving something the others cannot:
+Six crates under `tests/`, each proving something the others cannot:
 
 - `derive_macros.rs` — the consumer-perspective compile test. It names neither `serde` nor
   `sqlx`, reaching them through this crate's re-exports, so building at all is the assertion
@@ -126,11 +148,23 @@ Five crates under `tests/`, each proving something the others cannot:
   checks, because a `deserialize_with` that resolves but is not actually attached would still
   compile and would still lose an explicit `null`.
 - `double_option.rs` — the three states, over real JSON.
+- `database_generic.rs` — every pool-taking trait implemented against SQLite rather than
+  Postgres, purely to prove the traits and their `Pool<<Self as HasDatabase>::Database>`
+  signatures are not secretly tied to one driver. All thirteen appear in this one file — the
+  eleven at the crate root plus `ListRecordsPaginated`/`ListRecordsWherePaginated` from
+  `pagination.rs`, one at `OffsetParams` and the other at `CursorParams<i64>` so both
+  pagination modes are exercised — with a `WidgetFilter` standing in for a `*Where` clause
+  and `macros::Update` supplying the `HasUpdateFields`/`UpdateFields` pair `UpdateRecord`
+  needs. Nothing here connects: these are compile-time assertions, and `pagination.rs` and
+  `axum_helpers/tests/route_responses.rs` are where real queries run.
 - `pagination.rs` — the envelope's JSON wire shape through this crate's own re-exported
   `serde`: one outer shape for both modes, the cursor keeping its own JSON type rather than
-  being stringified. Also proves `ListRecordsPaginated` and `ListRecordsWherePaginated` are
-  implementable from outside the crate — a compile-time assertion, since this crate has no
-  async runtime in its dev-dependencies and the impls are never awaited.
+  being stringified. A `Widget` fixture proves `ListRecordsPaginated` and
+  `ListRecordsWherePaginated` are implementable from outside the crate as a compile-time
+  assertion — no rows, nothing awaited — and a second fixture, `Entry`, runs real queries
+  against a real in-memory SQLite database to exercise the contract a fake impl cannot be
+  held to: a cursor's total order, `next` coming from a `limit + 1` fetch, and `total` being
+  `Some` if and only if it was asked for.
 - `request_body_traits.rs` / `update_fields_traits.rs` — the pair contracts, including the
   `record -> (key, body) -> record` round trip that catches a field reassembled into the
   wrong slot.

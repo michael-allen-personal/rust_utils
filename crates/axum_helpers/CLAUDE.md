@@ -14,6 +14,14 @@ included; see the root `CLAUDE.md`. All four test crates reach `axum`, `serde`, 
 `sql_traits` *only* through those re-exports, so the re-export surface being sufficient to
 write a handler is itself under test.
 
+A handler's state type follows the record's database rather than naming one: every route
+trait extracts `State<Pool<<Self as HasDatabase>::Database>>`, so a `Postgres` record mounts
+with `State<PgPool>` and a `Sqlite` one with `State<Pool<Sqlite>>` without either the trait
+or the mount site spelling a driver — no route trait added `HasDatabase` to its own
+supertrait list, because each already has a `sql_traits` supertrait that carries it. This
+crate's own `postgres`/`sqlite`/`mysql`/`any` features forward to the matching feature on
+`sql_traits` (and on `sqlx`), so enabling one here enables it on both.
+
 ## Trait ↔ route ↔ status code
 
 | SQL trait | Route trait | Success | Empty result |
@@ -127,7 +135,8 @@ rejected.
 ## The policy bounds page size, not depth
 
 There is deliberately no ceiling on `offset`. `?offset=4294967295` is a legal request and hands a
-very deep `OFFSET` to Postgres, which scans and discards every skipped row. `sql_traits` must not
+very deep `OFFSET` to whichever database the record names, which scans and discards every
+skipped row. `sql_traits` must not
 clamp — a silently reduced page is indistinguishable from a short last page, and the same argument
 covers a silently reduced offset — and an implementation's only error channel there is
 `sqlx::Error`, which is a `500`. A consumer who needs to bound depth does it in their own query
@@ -219,6 +228,10 @@ Four crates, deliberately split by what they can prove:
   and mounting it are separate checks; `Router::route` is where axum's `Handler` requirements
   are actually enforced, and it is where the pre-v0.7.0 missing-`DeserializeOwned` bug
   surfaced. This is also the only file covering the `*Where` family.
-- `route_responses.rs` — what handlers actually answer. Driving a `Router` with a real
-  request is the only way to exercise URL-segment binding: calling a handler directly takes a
-  `Path` built by hand, which proves nothing about which segment filled which field.
+- `route_responses.rs` — what handlers actually answer. `Widget`'s fixture runs against a
+  real in-memory SQLite database built fresh per test, so its assertions hold for rows
+  actually read from and written to a database; `Membership` and the paginated fixtures
+  still fake their SQL impls, because their subject is axum's own extraction rather than the
+  query. Driving a `Router` with a real request is the only way to exercise URL-segment
+  binding either way: calling a handler directly takes a `Path` built by hand, which proves
+  nothing about which segment filled which field.

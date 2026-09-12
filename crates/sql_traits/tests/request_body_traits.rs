@@ -4,7 +4,8 @@
 
 use sql_traits::{HasPrimaryKey, HasRequestBody, RequestBody};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, macros::Database)]
+#[macros(database = Sqlite)]
 struct User {
     id: i64,
     name: String,
@@ -123,7 +124,7 @@ fn assembly_is_reachable_from_generic_code() {
 impl sql_traits::ReplaceRecord for User {
     async fn replace_record(
         self,
-        _pool: &sql_traits::sqlx::PgPool,
+        _pool: &sql_traits::sqlx::Pool<sql_traits::sqlx::Sqlite>,
     ) -> Result<Option<Self>, sql_traits::sqlx::Error> {
         Ok(Some(self))
     }

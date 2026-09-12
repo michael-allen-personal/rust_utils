@@ -11,7 +11,13 @@ use syn::{
 /// The complete list of directives `#[macros(...)]` accepts, named in every error so a
 /// typo says what to write instead.
 const MACROS_ATTR_HELP: &str = "`#[macros(...)]` accepts exactly `primary_key` on a field \
-     and `body_derive(Trait, ...)` or `update_derive(Trait, ...)` on the struct";
+     and `body_derive(Trait, ...)`, `update_derive(Trait, ...)` or `database = Db` on the \
+     struct";
+
+/// The `sqlx::Database` implementations `#[macros(database = ...)]` accepts, named in the
+/// error so a typo says what to write instead. A consumer with a database outside this set
+/// writes the three-line `HasDatabase` impl by hand.
+const DATABASES: [&str; 4] = ["Postgres", "Sqlite", "MySql", "Any"];
 
 /// One recognized `#[macros(...)]` directive.
 enum MacrosDirective {
@@ -21,6 +27,8 @@ enum MacrosDirective {
     BodyDerive(Vec<Path>),
     /// `#[macros(update_derive(A, B))]` — the derives to put on the generated update type.
     UpdateDerive(Vec<Path>),
+    /// `#[macros(database = Sqlite)]` — the database this type's queries run against.
+    Database(Ident),
 }
 
 /// Which struct-level derive list a given derive macro reads.
@@ -89,6 +97,24 @@ fn parse_macros_attr(attr: &Attribute) -> syn::Result<MacrosDirective> {
                     )
                 })
         }
+        Ok(Meta::NameValue(name_value)) if name_value.path.is_ident("database") => {
+            let syn::Expr::Path(expr) = &name_value.value else {
+                return Err(unrecognized());
+            };
+            let Some(ident) = expr.path.get_ident() else {
+                return Err(unrecognized());
+            };
+            if !DATABASES.contains(&ident.to_string().as_str()) {
+                return Err(syn::Error::new_spanned(
+                    ident,
+                    format!(
+                        "unknown database `{ident}`: `database` accepts {}",
+                        DATABASES.join(", ")
+                    ),
+                ));
+            }
+            Ok(MacrosDirective::Database(ident.clone()))
+        }
         _ => Err(unrecognized()),
     }
 }
@@ -141,6 +167,7 @@ fn is_pk_attr(attrs: &[Attribute]) -> syn::Result<bool> {
             MacrosDirective::UpdateDerive(_) => {
                 return Err(misplaced_on_field(attr, "update_derive"));
             }
+            MacrosDirective::Database(_) => return Err(misplaced_on_field(attr, "database")),
         }
     }
     Ok(marked)
@@ -417,6 +444,8 @@ fn container_derives(attrs: &[Attribute], reader: DeriveList) -> syn::Result<Vec
                      `PrimaryKey` derive generates no body type",
                 ));
             }
+            // Present for the `Database` derive, which is the only reader.
+            (MacrosDirective::Database(_), _) => {}
         }
     }
     Ok(derives)
@@ -712,6 +741,66 @@ fn try_expand_update(input: TokenStream2) -> syn::Result<TokenStream2> {
     })
 }
 
+/// Emits the `HasDatabase` impl associating a record with the one database its queries run
+/// against. The path is absolute and aimed at `sql_traits`' root plus its `sqlx` re-export,
+/// so the generated code resolves at the use site rather than in the caller's module.
+fn database_impl(name: &Ident, database: &Ident) -> TokenStream2 {
+    quote! {
+        impl ::sql_traits::HasDatabase for #name {
+            type Database = ::sql_traits::sqlx::#database;
+        }
+    }
+}
+
+/// Reads the struct-level `database` directive. Absence is a hard error rather than a
+/// default: a silent fallback would hide which database a record targets, and would fail
+/// with a message about Postgres on a consumer that never enabled that driver.
+fn container_database(attrs: &[Attribute], name: &Ident) -> syn::Result<Ident> {
+    let mut found: Option<Ident> = None;
+    for (attr, directive) in macros_directives(attrs)? {
+        match directive {
+            MacrosDirective::Database(ident) => {
+                if found.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        attr,
+                        "`database` is given more than once",
+                    ));
+                }
+                found = Some(ident);
+            }
+            // Present for a sibling derive that does read it.
+            MacrosDirective::BodyDerive(_) | MacrosDirective::UpdateDerive(_) => {}
+            MacrosDirective::PrimaryKey => {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "`primary_key` marks a field, not the struct",
+                ));
+            }
+        }
+    }
+    found.ok_or_else(|| {
+        syn::Error::new_spanned(
+            name,
+            format!(
+                "`#[derive(macros::Database)]` requires `#[macros(database = Db)]`, one of {}",
+                DATABASES.join(", ")
+            ),
+        )
+    })
+}
+
+/// Body of the `Database` derive.
+fn expand_database(input: TokenStream2) -> TokenStream2 {
+    let expanded = syn::parse2::<DeriveInput>(input).and_then(|input| {
+        let database = container_database(&input.attrs, &input.ident)?;
+        Ok(database_impl(&input.ident, &database))
+    });
+    match expanded {
+        Ok(tokens) => tokens,
+        Err(error) => error.to_compile_error(),
+    }
+}
+
 /// Body shared by the standalone marker derives.
 fn expand_marker(input: TokenStream2, trait_path: TokenStream2) -> TokenStream2 {
     match syn::parse2::<DeriveInput>(input) {
@@ -833,6 +922,21 @@ pub fn derive_record(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Update, attributes(macros))]
 pub fn derive_update(input: TokenStream) -> TokenStream {
     expand_update(input.into()).into()
+}
+
+/// Derive `Database` — associates a type with the one database its queries run against,
+/// named by `#[macros(database = Sqlite)]`.
+///
+/// Standalone rather than folded into `Record`, so that a hand-written record and a
+/// separate insert-side type (a `NewWidget` implementing `InsertRecord`) can both use it
+/// without pulling in the body-type generation.
+///
+/// The directive is required; its absence is a compile error naming the accepted set,
+/// never a silent default. `Record` and `Update` tolerate the directive without consuming
+/// it, exactly as they already tolerate each other's derive lists.
+#[proc_macro_derive(Database, attributes(macros))]
+pub fn derive_database(input: TokenStream) -> TokenStream {
+    expand_database(input.into()).into()
 }
 
 /// Derive `DeleteRoute` (requires the type to implement DeleteRecord + HasPrimaryKey).
@@ -1492,5 +1596,84 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("title : body . title"), "{out}");
+    }
+
+    fn expand_db(src: &str) -> String {
+        expand_database(src.parse().unwrap()).to_string()
+    }
+
+    #[test]
+    fn database_directive_names_the_sqlx_type_by_absolute_path() {
+        let out = expand_db("#[macros(database = Sqlite)] struct Widget { id: i64 }");
+        assert!(
+            out.contains(":: sql_traits :: HasDatabase for Widget"),
+            "{out}"
+        );
+        assert!(
+            out.contains("type Database = :: sql_traits :: sqlx :: Sqlite"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn each_supported_database_is_accepted() {
+        for db in ["Postgres", "Sqlite", "MySql", "Any"] {
+            let out = expand_db(&format!(
+                "#[macros(database = {db})] struct Widget {{ id: i64 }}"
+            ));
+            assert!(
+                out.contains(&format!("type Database = :: sql_traits :: sqlx :: {db}")),
+                "{db}: {out}"
+            );
+        }
+    }
+
+    // A typo must say what to write instead, never silently pick a database.
+    #[test]
+    fn an_unknown_database_is_a_hard_error_naming_the_set() {
+        let out = expand_db("#[macros(database = Sqlite3)] struct Widget { id: i64 }");
+        assert!(out.contains("compile_error"), "{out}");
+        assert!(out.contains("Postgres") && out.contains("MySql"), "{out}");
+    }
+
+    // Absence is an error rather than a default, so the database a record targets is
+    // always visible at the record.
+    #[test]
+    fn a_missing_database_directive_is_a_hard_error() {
+        let out = expand_db("struct Widget { id: i64 }");
+        assert!(out.contains("compile_error"), "{out}");
+        assert!(out.contains("database"), "{out}");
+    }
+
+    // `Record` and `Update` must tolerate this directive, and this derive must tolerate
+    // theirs, because a derive macro cannot see its siblings.
+    #[test]
+    fn database_is_tolerated_alongside_the_other_derive_lists() {
+        let out = expand_db(
+            "#[macros(database = Postgres)] #[macros(body_derive(Deserialize))] \
+             #[macros(update_derive(Deserialize))] struct Widget { id: i64 }",
+        );
+        assert!(!out.contains("compile_error"), "{out}");
+        assert!(
+            out.contains("type Database = :: sql_traits :: sqlx :: Postgres"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn record_tolerates_the_database_directive() {
+        let out = expand_rec(
+            "#[macros(database = Sqlite)] #[macros(body_derive(Deserialize))] \
+             struct Widget { #[macros(primary_key)] id: i64, name: String }",
+        );
+        assert!(!out.contains("compile_error"), "{out}");
+    }
+
+    #[test]
+    fn database_on_a_field_is_reported_as_misplaced() {
+        let out = expand_rec(
+            "struct Widget { #[macros(primary_key)] id: i64, #[macros(database = Sqlite)] name: String }",
+        );
+        assert!(out.contains("compile_error"), "{out}");
     }
 }

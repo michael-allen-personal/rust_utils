@@ -13,6 +13,14 @@ serde_json = { workspace = true }
 sql_traits = { workspace = true }
 sqlx = { workspace = true }
 
+# Forwarded to `sql_traits` and `sqlx` together, so a consumer enabling a driver here gets
+# it in both. No default, for the same reason `sql_traits` has none.
+[features]
+postgres = ["sql_traits/postgres", "sqlx/postgres"]
+sqlite = ["sql_traits/sqlite", "sqlx/sqlite"]
+mysql = ["sql_traits/mysql", "sqlx/mysql"]
+any = ["sql_traits/any", "sqlx/any"]
+
 [dev-dependencies]
 # Consumer-perspective compile tests for the route derive macros. Nothing here declares
 # `serde` or `sql_traits`: the test crates reach them only through `axum_helpers`'
@@ -28,7 +36,11 @@ tokio = { workspace = true }
 # built by hand, so it proves nothing about which segment filled which field. Spelled the way
 # axum spells its own dependency on it, so dev-dep feature unification cannot pull in extras.
 tower = { workspace = true }
-# Enables the sqlx runtime for test builds only. The library deliberately does not pick one
-# in `[dependencies]`, leaving that to the consumer; `PgPool::connect_lazy` panics without
-# it, and that pool is what lets a handler be called without a database.
-sqlx = { workspace = true, features = ["runtime-tokio"] }
+# Enables both drivers plus a runtime for test builds only. The library deliberately picks
+# neither a driver nor a runtime in `[dependencies]`, leaving both to the consumer. Both
+# drivers are needed, not one: `tests/route_traits.rs` carries a Postgres fixture (`Gadget`)
+# and a SQLite fixture (`Sprocket`), mounting both on real routers, which is what proves the
+# route traits follow each record's own `HasDatabase` rather than being tied to one driver.
+# The runtime backs the real in-memory SQLite databases `tests/route_responses.rs` builds
+# and queries.
+sqlx = { workspace = true, features = ["postgres", "sqlite", "runtime-tokio"] }

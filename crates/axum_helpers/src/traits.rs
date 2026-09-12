@@ -5,13 +5,13 @@ use axum::{
     response::{self, IntoResponse, Response},
 };
 use serde::de::DeserializeOwned;
-use sqlx::PgPool;
+use sqlx::Pool;
 
 use sql_traits::{
     BulkInsertRecords, DeleteRecord, DeleteRecordsWhere, GetLatestRecord, GetRecord,
-    GetRecordWhere, HasPrimaryKey, HasRequestBody, HasUpdateFields, InsertRecord, ListRecords,
-    ListRecordsPaginated, ListRecordsWhere, ListRecordsWherePaginated, PaginationParams,
-    ReplaceRecord, UpdateFields, UpdateRecord,
+    GetRecordWhere, HasDatabase, HasPrimaryKey, HasRequestBody, HasUpdateFields, InsertRecord,
+    ListRecords, ListRecordsPaginated, ListRecordsWhere, ListRecordsWherePaginated,
+    PaginationParams, ReplaceRecord, UpdateFields, UpdateRecord,
 };
 
 use crate::{ApiError, ApiErrorResponse, PaginationQuery};
@@ -66,7 +66,9 @@ fn validated_query<Q: PaginationQuery>(
 #[async_trait]
 pub trait GetLatestRoute: GetLatestRecord + serde::Serialize {
     // TODO: Add a function for logging
-    async fn get_latest_route(State(pool): State<PgPool>) -> Response {
+    async fn get_latest_route(
+        State(pool): State<Pool<<Self as HasDatabase>::Database>>,
+    ) -> Response {
         let result = Self::get_latest_record(&pool).await.map_err(ApiError::from);
         optional_record_response(result, no_content)
     }
@@ -91,7 +93,7 @@ where
 {
     // TODO: Add a function for logging
     async fn get_record_route(
-        State(pool): State<PgPool>,
+        State(pool): State<Pool<<Self as HasDatabase>::Database>>,
         Path(primary_key): Path<<Self as HasPrimaryKey>::PrimaryKey>,
     ) -> Response {
         let result = Self::get_record(&pool, primary_key)
@@ -109,7 +111,7 @@ pub trait GetRecordWhereRoute<T: Send>: GetRecordWhere<T> + serde::Serialize {
     type PathParams: Into<T> + DeserializeOwned + Send + 'static;
     // TODO: Add a function for logging
     async fn get_record_where_route(
-        State(pool): State<PgPool>,
+        State(pool): State<Pool<<Self as HasDatabase>::Database>>,
         Path(path_params): Path<Self::PathParams>,
     ) -> Response {
         let result = Self::get_record_where(&pool, path_params.into())
@@ -125,7 +127,9 @@ pub trait GetRecordWhereRoute<T: Send>: GetRecordWhere<T> + serde::Serialize {
 #[async_trait]
 pub trait ListRecordsRoute: ListRecords + serde::Serialize {
     // TODO: Add a function for logging
-    async fn list_records_route(State(pool): State<PgPool>) -> Response {
+    async fn list_records_route(
+        State(pool): State<Pool<<Self as HasDatabase>::Database>>,
+    ) -> Response {
         Self::list_records(&pool)
             .await
             .map_err(ApiError::from)
@@ -177,7 +181,7 @@ where
 {
     // TODO: Add a function for logging
     async fn list_records_paginated_route(
-        State(pool): State<PgPool>,
+        State(pool): State<Pool<<Self as HasDatabase>::Database>>,
         query: Result<Query<Q>, QueryRejection>,
     ) -> Response {
         let params = match validated_query(query) {
@@ -201,7 +205,7 @@ pub trait ListRecordsWhereRoute<T: Send>: ListRecordsWhere<T> + serde::Serialize
     type PathParams: Into<T> + DeserializeOwned + Send + 'static;
     // TODO: Add a function for logging
     async fn list_records_where_route(
-        State(pool): State<PgPool>,
+        State(pool): State<Pool<<Self as HasDatabase>::Database>>,
         Path(path_params): Path<Self::PathParams>,
     ) -> Response {
         Self::list_records_where(&pool, path_params.into())
@@ -235,7 +239,7 @@ where
 
     // TODO: Add a function for logging
     async fn list_records_where_paginated_route(
-        State(pool): State<PgPool>,
+        State(pool): State<Pool<<Self as HasDatabase>::Database>>,
         Path(path_params): Path<Self::PathParams>,
         query: Result<Query<Q>, QueryRejection>,
     ) -> Response {
@@ -262,7 +266,7 @@ where
 {
     // TODO: Add a function for logging
     async fn create_route(
-        State(pool): State<PgPool>,
+        State(pool): State<Pool<<Self as HasDatabase>::Database>>,
         extract::Json(obj): extract::Json<Self>,
     ) -> Response {
         obj.insert_record(&pool)
@@ -283,7 +287,7 @@ where
 {
     // TODO: Add a function for logging
     async fn bulk_create_route(
-        State(pool): State<PgPool>,
+        State(pool): State<Pool<<Self as HasDatabase>::Database>>,
         extract::Json(objs): extract::Json<Vec<Self>>,
     ) -> Response {
         Self::bulk_insert_records(&pool, &objs)
@@ -311,7 +315,7 @@ where
 {
     // TODO: Add a function for logging
     async fn delete_route(
-        State(pool): State<PgPool>,
+        State(pool): State<Pool<<Self as HasDatabase>::Database>>,
         Path(primary_key): Path<<Self as HasPrimaryKey>::PrimaryKey>,
     ) -> Response {
         <Self as DeleteRecord>::delete_record(&pool, primary_key)
@@ -333,7 +337,7 @@ where
     type PathParams: Into<T> + DeserializeOwned + Send + 'static;
     // TODO: Add a function for logging
     async fn delete_records_where_route(
-        State(pool): State<PgPool>,
+        State(pool): State<Pool<<Self as HasDatabase>::Database>>,
         Path(path_params): Path<Self::PathParams>,
     ) -> Response {
         Self::delete_records_where(&pool, path_params.into())
@@ -382,7 +386,7 @@ where
 {
     // TODO: Add a function for logging
     async fn replace_route(
-        State(pool): State<PgPool>,
+        State(pool): State<Pool<<Self as HasDatabase>::Database>>,
         Path(primary_key): Path<<Self as HasPrimaryKey>::PrimaryKey>,
         extract::Json(body): extract::Json<<Self as HasRequestBody>::RequestBody>,
     ) -> Response {
@@ -432,7 +436,7 @@ where
 {
     // TODO: Add a function for logging
     async fn update_route(
-        State(pool): State<PgPool>,
+        State(pool): State<Pool<<Self as HasDatabase>::Database>>,
         Path(primary_key): Path<<Self as HasPrimaryKey>::PrimaryKey>,
         extract::Json(update_fields): extract::Json<<Self as HasUpdateFields>::UpdateFields>,
     ) -> Response {

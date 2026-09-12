@@ -1,23 +1,28 @@
 //! Response-code assertions for the route handlers.
 //!
 //! The other test crates check that handlers compile and mount; this one checks what they
-//! actually answer. `PgPool::connect_lazy` builds a pool without opening a connection, and
-//! the fixture's SQL impls never touch it, so a handler can be called directly and its
-//! `Response` inspected without a database.
+//! actually answer. `Widget`'s fixture runs against a real in-memory SQLite database, built
+//! fresh by `pool()` for every test, so the assertions below hold for rows that are actually
+//! read from and written to a database rather than for a fake that ignores its pool.
+//! `Membership` and the paginated fixtures still fake their SQL impls, because their subject
+//! is axum's own extraction (composite-key path binding, query-parameter plumbing) rather
+//! than the query itself — but they share the same real pool for type-level consistency.
 
 use axum_helpers::async_trait::async_trait;
 use axum_helpers::axum::extract::{Json, Path, State};
 use axum_helpers::axum::http::StatusCode;
 use axum_helpers::sql_traits::{
-    HasPrimaryKey, HasRequestBody, HasUpdateFields, ReplaceRecord, UpdateFields, UpdateRecord,
+    GetRecord, HasPrimaryKey, HasRequestBody, HasUpdateFields, ReplaceRecord, UpdateFields,
+    UpdateRecord,
 };
-use axum_helpers::sqlx::{self, PgPool};
+use axum_helpers::sqlx::{self, Pool, Sqlite};
 use axum_helpers::{GetRecordRoute, ReplaceRoute, UpdateRoute, serde};
 
 /// The primary key the fixture treats as matching no row.
 const MISSING_ID: i64 = 404;
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, macros::Database)]
+#[macros(database = Sqlite)]
 #[serde(crate = "axum_helpers::serde")]
 struct Widget {
     id: i64,
@@ -48,21 +53,84 @@ impl HasRequestBody for Widget {
 }
 
 #[async_trait]
+impl GetRecord for Widget {
+    async fn get_record(
+        pool: &Pool<Sqlite>,
+        primary_key: i64,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        sqlx::query_as::<_, (i64, String)>("SELECT id, name FROM widget WHERE id = ?")
+            .bind(primary_key)
+            .fetch_optional(pool)
+            .await
+            .map(|row| row.map(|(id, name)| Widget { id, name }))
+    }
+}
+
+impl GetRecordRoute for Widget {}
+
+#[async_trait]
 impl ReplaceRecord for Widget {
-    async fn replace_record(self, _pool: &PgPool) -> Result<Option<Self>, sqlx::Error> {
-        if self.id == MISSING_ID {
-            return Ok(None);
-        }
-        Ok(Some(self))
+    async fn replace_record(self, pool: &Pool<Sqlite>) -> Result<Option<Self>, sqlx::Error> {
+        sqlx::query_as::<_, (i64, String)>(
+            "UPDATE widget SET name = ? WHERE id = ? RETURNING id, name",
+        )
+        .bind(&self.name)
+        .bind(self.id)
+        .fetch_optional(pool)
+        .await
+        .map(|row| row.map(|(id, name)| Widget { id, name }))
     }
 }
 
 impl ReplaceRoute for Widget {}
 
-/// A pool that is never connected to. `connect_lazy` defers the connection until first
-/// use, and nothing in these fixtures uses it.
-fn pool() -> PgPool {
-    PgPool::connect_lazy("postgres://localhost/unused").expect("a valid connection string")
+/// A real in-memory SQLite database with this file's schema already created.
+///
+/// `sqlx` shares one in-memory database across a pool's connections, so no
+/// `max_connections(1)` or shared-cache URI is needed — a table created here is visible to
+/// every connection the pool hands out. Each call builds a fresh database, so tests cannot
+/// see one another's rows.
+async fn pool() -> Pool<Sqlite> {
+    let pool = Pool::<Sqlite>::connect("sqlite::memory:")
+        .await
+        .expect("an in-memory database");
+    sqlx::query("CREATE TABLE widget (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+        .execute(&pool)
+        .await
+        .expect("the schema");
+    pool
+}
+
+/// Inserts one row and returns its key, for tests that need a record to address.
+async fn insert_widget(pool: &Pool<Sqlite>, name: &str) -> i64 {
+    sqlx::query_as::<_, (i64,)>("INSERT INTO widget (name) VALUES (?) RETURNING id")
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .expect("the insert")
+        .0
+}
+
+#[tokio::test]
+async fn get_answers_200_with_the_row_that_is_actually_stored() {
+    use axum_helpers::axum::body::to_bytes;
+
+    let pool = pool().await;
+    let id = insert_widget(&pool, "cog").await;
+
+    let response = Widget::get_record_route(State(pool), Path(id)).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("a complete body");
+    let body = String::from_utf8(bytes.to_vec()).expect("utf-8");
+
+    assert!(
+        body.contains(&format!(r#""id":{id}"#)) && body.contains(r#""name":"cog""#),
+        "the response must carry the row that was actually inserted, got {body}"
+    );
 }
 
 fn body() -> WidgetBody {
@@ -73,7 +141,9 @@ fn body() -> WidgetBody {
 
 #[tokio::test]
 async fn replace_answers_404_when_the_key_matches_no_row() {
-    let response = Widget::replace_route(State(pool()), Path(MISSING_ID), Json(body())).await;
+    let pool = pool().await;
+
+    let response = Widget::replace_route(State(pool), Path(MISSING_ID), Json(body())).await;
 
     assert_eq!(
         response.status(),
@@ -84,7 +154,10 @@ async fn replace_answers_404_when_the_key_matches_no_row() {
 
 #[tokio::test]
 async fn replace_answers_200_when_the_row_exists() {
-    let response = Widget::replace_route(State(pool()), Path(1), Json(body())).await;
+    let pool = pool().await;
+    let id = insert_widget(&pool, "cog").await;
+
+    let response = Widget::replace_route(State(pool), Path(id), Json(body())).await;
 
     assert_eq!(response.status(), StatusCode::OK);
 }
@@ -122,17 +195,17 @@ impl UpdateFields for WidgetUpdate {
 #[async_trait]
 impl UpdateRecord for Widget {
     async fn update_record(
-        _pool: &PgPool,
+        pool: &Pool<Sqlite>,
         primary_key: i64,
         update_fields: WidgetUpdate,
     ) -> Result<Option<Self>, sqlx::Error> {
-        if primary_key == MISSING_ID {
+        // Fetch-apply-replace, which is one of the two shapes `UpdateRecord`'s own docs
+        // describe. It keeps the statement static, and `UpdateRoute` has already rejected
+        // an empty update with `400` before this is reached.
+        let Some(record) = Self::get_record(pool, primary_key).await? else {
             return Ok(None);
-        }
-        Ok(Some(update_fields.apply(Widget {
-            id: primary_key,
-            name: "before".to_string(),
-        })))
+        };
+        update_fields.apply(record).replace_record(pool).await
     }
 }
 
@@ -148,22 +221,30 @@ fn update(name: Option<&str>) -> WidgetUpdate {
 /// empty patch before it can reach an implementation that builds one.
 #[tokio::test]
 async fn update_answers_400_when_no_field_is_set() {
-    let response = Widget::update_route(State(pool()), Path(1), Json(update(None))).await;
+    let pool = pool().await;
+    let id = insert_widget(&pool, "before").await;
+
+    let response = Widget::update_route(State(pool), Path(id), Json(update(None))).await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
 async fn update_answers_404_when_the_key_matches_no_row() {
+    let pool = pool().await;
+
     let response =
-        Widget::update_route(State(pool()), Path(MISSING_ID), Json(update(Some("after")))).await;
+        Widget::update_route(State(pool), Path(MISSING_ID), Json(update(Some("after")))).await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
 async fn update_answers_200_when_a_field_is_set() {
-    let response = Widget::update_route(State(pool()), Path(1), Json(update(Some("after")))).await;
+    let pool = pool().await;
+    let id = insert_widget(&pool, "before").await;
+
+    let response = Widget::update_route(State(pool), Path(id), Json(update(Some("after")))).await;
 
     assert_eq!(response.status(), StatusCode::OK);
 }
@@ -172,7 +253,9 @@ async fn update_answers_200_when_a_field_is_set() {
 /// request whether or not the row exists, and it must not cost a database round trip.
 #[tokio::test]
 async fn an_empty_patch_is_rejected_before_the_key_is_looked_up() {
-    let response = Widget::update_route(State(pool()), Path(MISSING_ID), Json(update(None))).await;
+    let pool = pool().await;
+
+    let response = Widget::update_route(State(pool), Path(MISSING_ID), Json(update(None))).await;
 
     assert_eq!(
         response.status(),
@@ -189,8 +272,9 @@ async fn an_empty_patch_is_rejected_before_the_key_is_looked_up() {
 
 /// Marked fields in the order `user_id`, `group_id`; every route below deliberately declares
 /// its segments in the opposite order. Under the old tuple key that swapped the two silently.
-#[derive(serde::Serialize, macros::Record, macros::GetRecordRoute)]
+#[derive(serde::Serialize, macros::Record, macros::GetRecordRoute, macros::Database)]
 #[macros(body_derive(axum_helpers::serde::Deserialize))]
+#[macros(database = Sqlite)]
 #[serde(crate = "axum_helpers::serde")]
 struct Membership {
     #[macros(primary_key)]
@@ -201,11 +285,12 @@ struct Membership {
 }
 
 /// Echoes the key it was handed straight back, so the response body says exactly which value
-/// landed in which field.
+/// landed in which field. Still a fake: these tests assert axum's composite-key path binding
+/// by name, not a query, so a real second table would not strengthen them.
 #[async_trait]
 impl axum_helpers::sql_traits::GetRecord for Membership {
     async fn get_record(
-        _pool: &PgPool,
+        _pool: &Pool<Sqlite>,
         primary_key: <Self as HasPrimaryKey>::PrimaryKey,
     ) -> Result<Option<Self>, sqlx::Error> {
         Ok(Some(Membership {
@@ -216,13 +301,13 @@ impl axum_helpers::sql_traits::GetRecord for Membership {
     }
 }
 
-fn memberships(path: &str) -> axum_helpers::axum::Router {
+async fn memberships(path: &str) -> axum_helpers::axum::Router {
     axum_helpers::axum::Router::new()
         .route(
             path,
             axum_helpers::axum::routing::get(Membership::get_record_route),
         )
-        .with_state(pool())
+        .with_state(pool().await)
 }
 
 /// Sends one request through the router and returns the status and the body as a string.
@@ -232,6 +317,7 @@ async fn get(path: &str, uri: &str) -> (axum_helpers::axum::http::StatusCode, St
     use tower::ServiceExt as _;
 
     let response = memberships(path)
+        .await
         .oneshot(
             Request::builder()
                 .uri(uri)
@@ -425,12 +511,14 @@ const PAST_THE_END: u32 = 1000;
 
 /// Echoes the parameters it received into the data, so the response body says exactly what
 /// reached the SQL layer. Cheaper and clearer than giving the fixture interior mutability.
+/// Still a fake: its subject is query-parameter plumbing reaching the impl, not SQL — real
+/// paginated queries are a separate task, in `sql_traits`.
 #[async_trait]
 impl axum_helpers::sql_traits::ListRecordsPaginated<axum_helpers::sql_traits::OffsetParams>
     for Widget
 {
     async fn list_records_paginated(
-        _pool: &PgPool,
+        _pool: &Pool<Sqlite>,
         params: axum_helpers::sql_traits::OffsetParams,
     ) -> Result<
         axum_helpers::sql_traits::Page<Self, axum_helpers::sql_traits::OffsetPagination>,
@@ -461,7 +549,7 @@ impl axum_helpers::sql_traits::ListRecordsPaginated<axum_helpers::sql_traits::Of
 /// from this type rather than from any crate-wide number.
 impl axum_helpers::ListRecordsPaginatedRoute<axum_helpers::OffsetParamsQuery<10, 25>> for Widget {}
 
-fn paged_router() -> axum_helpers::axum::Router {
+async fn paged_router() -> axum_helpers::axum::Router {
     axum_helpers::axum::Router::new()
         .route(
             "/widgets",
@@ -471,7 +559,7 @@ fn paged_router() -> axum_helpers::axum::Router {
                 >>::list_records_paginated_route,
             ),
         )
-        .with_state(pool())
+        .with_state(pool().await)
 }
 
 /// Sends one request through the paginated router and returns the status and body.
@@ -481,6 +569,7 @@ async fn paged(uri: &str) -> (StatusCode, String) {
     use tower::ServiceExt as _;
 
     let response = paged_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri(uri)
@@ -609,6 +698,8 @@ struct OwnerFilter {
     owner_id: i64,
 }
 
+/// Still a fake: its subject is query-parameter plumbing reaching the impl, not SQL — real
+/// paginated queries are a separate task, in `sql_traits`.
 #[async_trait]
 impl
     axum_helpers::sql_traits::ListRecordsWherePaginated<
@@ -617,7 +708,7 @@ impl
     > for Widget
 {
     async fn list_records_where_paginated(
-        _pool: &PgPool,
+        _pool: &Pool<Sqlite>,
         where_params: OwnerFilter,
         params: axum_helpers::sql_traits::OffsetParams,
     ) -> Result<
@@ -663,7 +754,7 @@ async fn owner_paged(uri: &str) -> (StatusCode, String) {
                 >>::list_records_where_paginated_route,
             ),
         )
-        .with_state(pool());
+        .with_state(pool().await);
 
     let response = router
         .oneshot(
