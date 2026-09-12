@@ -1,0 +1,306 @@
+# Sample API — every route, one request each.
+#
+# Start the server first:  cargo run -p sample_api
+#
+# The database is in-memory and re-seeded on every start, so the ids below are always valid.
+# Requests that create or delete rows affect only the current run.
+#
+# The file mutates state as it runs and is meant to be replayed top to bottom against a
+# freshly started server. Where a request deletes or replaces a row, later requests avoid
+# depending on what it removed — see the per-request comments for which rows are safe to
+# reuse (books 5, 6, 7 and author 4 are the "throwaway" ids mutated below; author 1, author
+# 2's id, and books 1-4 are read again later and are never deleted).
+
+@host = http://127.0.0.1:3114
+
+# ============================================================================================
+# Authors
+# ============================================================================================
+
+### The most recently added author (highest id) — Mary Roach, id 3, from the seed.
+# The 204 empty-table case is reachable only by deleting every author first; doing that here
+# would break every other /authors request below, so it is not demonstrated in this file.
+# @name authors_latest
+GET {{host}}/authors/latest
+
+###
+# @name authors_list
+GET {{host}}/authors
+
+### POST /authors takes a FULL Author, id included — the bundle's CreateRoute deserializes the
+# record itself. Contrast with POST /books further down, whose body has no id because the
+# database assigns one.
+# @name authors_create
+POST {{host}}/authors
+Content-Type: application/json
+
+{
+  "id": 4,
+  "name": "Octavia Butler",
+  "bio": "Won the Hugo and Nebula awards for the Xenogenesis and Earthseed series."
+}
+
+###
+# @name authors_bulk_create
+POST {{host}}/authors/bulk
+Content-Type: application/json
+
+[
+  {
+    "id": 5,
+    "name": "Isaac Asimov",
+    "bio": "Prolific science fiction and popular-science writer."
+  },
+  {
+    "id": 6,
+    "name": "N. K. Jemisin",
+    "bio": null
+  }
+]
+
+###
+# @name authors_get
+GET {{host}}/authors/2
+
+### No author 999 exists.
+# @name authors_get_missing
+GET {{host}}/authors/999
+
+### PUT body is the generated AuthorBody — Author minus its primary key (id).
+# @name authors_replace
+PUT {{host}}/authors/2
+Content-Type: application/json
+
+{
+  "name": "Sir Terry Pratchett",
+  "bio": "Creator of Discworld, knighted in 2009."
+}
+
+### Three-state partial update, adjacent, all against author 1 (which starts with a bio).
+# 1 of 3 — "name" only. "bio" is absent from the body, so AuthorUpdate::bio is None ("leave
+# it alone") and the existing bio survives untouched.
+# @name authors_patch_name_only
+PATCH {{host}}/authors/1
+Content-Type: application/json
+
+{
+  "name": "Renamed"
+}
+
+### 2 of 3 — an explicit null. Via the `double_option` deserializer this is
+# Some(None), which clears the column: bio becomes NULL.
+# @name authors_patch_clear_bio
+PATCH {{host}}/authors/1
+Content-Type: application/json
+
+{
+  "bio": null
+}
+
+### 3 of 3 — an explicit value. Some(Some("...")), which sets the column.
+# @name authors_patch_set_bio
+PATCH {{host}}/authors/1
+Content-Type: application/json
+
+{
+  "bio": "Back again"
+}
+
+### An empty update body. UpdateRoute answers 400 before the pool is touched — a dynamically
+# built UPDATE with an empty SET list would otherwise be a SQL syntax error, so this is
+# rejected up front regardless of whether author 1 exists.
+# @name authors_patch_empty
+PATCH {{host}}/authors/1
+Content-Type: application/json
+
+{}
+
+### Author 1's books (ids 1-5), via the *Where family — filtered list, not a path parameter
+# on Book itself.
+# @name authors_books
+GET {{host}}/authors/1/books
+
+### The first (lowest-id) of author 1's books — book 1, "A Wizard of Earthsea".
+# @name authors_books_first
+GET {{host}}/authors/1/books/first
+
+### Deletes the author created above (id 4), not a seeded one, so nothing later in this file
+# breaks.
+# @name authors_delete
+DELETE {{host}}/authors/4
+
+# ============================================================================================
+# Books
+# ============================================================================================
+
+###
+# @name books_list
+GET {{host}}/books
+
+### POST /books takes a NewBook with NO id — the database assigns one. Contrast with
+# POST /authors above, whose body carries an explicit id.
+# @name books_create
+POST {{host}}/books
+Content-Type: application/json
+
+{
+  "author_id": 2,
+  "title": "Nation",
+  "genre": "Fiction",
+  "published_year": 2008
+}
+
+### "sci-fi" is a parse-only alias for "Science Fiction" — str_enum! matching ignores case
+# and separators. The alias itself never appears on the wire; check the response body and
+# "genre" comes back as "Science Fiction".
+# @name books_create_genre_alias
+POST {{host}}/books
+Content-Type: application/json
+
+{
+  "author_id": 1,
+  "title": "Rocannon's World",
+  "genre": "sci-fi",
+  "published_year": 1966
+}
+
+###
+# @name books_bulk_create
+POST {{host}}/books/bulk
+Content-Type: application/json
+
+[
+  {
+    "author_id": 3,
+    "title": "Gulp",
+    "genre": "Non-Fiction",
+    "published_year": 2013
+  },
+  {
+    "author_id": 2,
+    "title": "Reaper Man",
+    "genre": "Fiction",
+    "published_year": 1991
+  }
+]
+
+### Offset pagination, this route's default policy (DefaultOffsetParamsQuery: 50 per page,
+# 200 at most).
+# @name books_page
+GET {{host}}/books/page
+
+### Exceeds the crate default maximum of 200 (DefaultOffsetParamsQuery's MAX_LIMIT) — 400.
+# @name books_page_over_limit
+GET {{host}}/books/page?limit=500
+
+### Cursor pagination. This route's own limit policy is CursorParamsQuery<i64, 10, 50> —
+# 10 per page by default, 50 at most — distinct from /books/page's 50/200 above. The seed
+# alone has 12 books, so the first page of 10 leaves a real second page. The response's
+# "pagination.next" is 10; that is the cursor the next request uses.
+# @name books_cursor_first_page
+GET {{host}}/books/cursor
+
+### Resumes after id 10 — the "next" the previous request returned.
+# @name books_cursor_second_page
+GET {{host}}/books/cursor?cursor=10
+
+### This route's own maximum is 50 (not the crate default of 200 that /books/page enforces) —
+# a per-route policy overriding the crate default. 400.
+# @name books_cursor_over_limit
+GET {{host}}/books/cursor?limit=100
+
+###
+# @name books_get
+GET {{host}}/books/1
+
+### PUT body is the generated BookBody — Book minus its primary key (id). Uses book 5, which
+# nothing else in this file reads afterward.
+# @name books_replace
+PUT {{host}}/books/5
+Content-Type: application/json
+
+{
+  "author_id": 1,
+  "title": "The Lathe of Heaven (revised)",
+  "genre": "Science Fiction",
+  "published_year": 1971
+}
+
+### PATCH body is the generated BookUpdate — every field optional. Uses book 6, which nothing
+# else in this file reads afterward. Unlike published_year (Option<Option<i32>>, three-state),
+# genre is plain Option<Genre> here: a book's genre can be left alone or set, never explicitly
+# cleared.
+# @name books_patch
+PATCH {{host}}/books/6
+Content-Type: application/json
+
+{
+  "genre": "Non-Fiction"
+}
+
+### Uses book 7, which nothing else in this file reads afterward.
+# @name books_delete
+DELETE {{host}}/books/7
+
+# ============================================================================================
+# Reviews
+# ============================================================================================
+
+### POST /reviews takes a full Review, both key fields (book_id, reviewer) included — there is
+# no database-assigned column to leave out, unlike POST /books. Targets book 4, which has no
+# reviews in the seed.
+# @name reviews_create
+POST {{host}}/reviews
+Content-Type: application/json
+
+{
+  "book_id": 4,
+  "reviewer": "frank",
+  "rating": 4,
+  "comment": "Solid entry."
+}
+
+### Book 1's reviews, paginated — ada, brian, cleo, all still as seeded (run before the
+# single-reviewer mutations below touch any of them).
+# @name reviews_page
+GET {{host}}/books/1/reviews/page
+
+### Book 2 has three reviews in the seed (ada, brian, dev) and is not read again later in
+# this file — DeleteRecordsWhereRoute serializes the count it matched, unlike DeleteRoute,
+# which discards it and answers 204. Response body: 3.
+# @name reviews_delete_where_book2
+DELETE {{host}}/books/2/reviews
+
+### Book 3 has no reviews in the seed, so this is a legitimate zero-affected-rows delete
+# rather than an error — the response body reports a count of 0.
+# @name reviews_delete_where
+DELETE {{host}}/books/3/reviews
+
+### The path segments (book_id, reviewer) are named after ReviewPrimaryKey's fields and bind
+# BY NAME, not position — declaring the route's segments in a different order would not change
+# what this matches, since axum::extract::Path fills the struct by field name.
+# @name reviews_get
+GET {{host}}/books/1/reviews/ada
+
+### PUT body is the generated ReviewBody — Review minus both key fields.
+# @name reviews_replace
+PUT {{host}}/books/1/reviews/brian
+Content-Type: application/json
+
+{
+  "rating": 5,
+  "comment": "Reread it and revised my rating up."
+}
+
+### PATCH body is the generated ReviewUpdate — every field optional.
+# @name reviews_patch
+PATCH {{host}}/books/1/reviews/cleo
+Content-Type: application/json
+
+{
+  "rating": 5
+}
+
+### Deletes the row this file just replaced above (book 1 / brian).
+# @name reviews_delete
+DELETE {{host}}/books/1/reviews/brian

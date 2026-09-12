@@ -185,6 +185,21 @@
 - Driver features on `sql_traits` and `axum_helpers` (`postgres`, `sqlite`, `mysql`,
   `any`), forwarding to `sqlx`. They exist so a consumer can pick a driver while still
   depending on the re-exported `sqlx` rather than declaring it themselves
+- **Sample API (`examples/sample_api`).** A runnable axum application over an in-memory
+  SQLite database that implements every pool-taking `sql_traits` trait and every
+  `axum_helpers` route trait (thirteen of each): `Author` for the `BasicCrudRoutes` bundle,
+  `Book` for a-la-carte route derives, both pagination modes and the `*Where` family, and
+  `Review` for a composite primary key. It exists so a change to these crates can be
+  exercised over real HTTP — `cargo run -p sample_api`, then the requests in
+  `examples/sample_api/requests.http` — instead of publishing a version and updating a
+  downstream project.
+
+  It also acts as a fifth consumer-perspective compile check. Like the `tests/` crates, it
+  reaches `axum`, `serde`, `sqlx` and `sql_traits` only through `axum_helpers`' re-exports,
+  so a re-export that stops being sufficient to write a real application breaks the
+  workspace build rather than surfacing in a consumer's repo.
+
+  Additive: no existing crate changed, and consumers need do nothing.
 
 ### Changed
 

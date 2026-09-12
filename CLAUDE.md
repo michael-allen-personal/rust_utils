@@ -2,10 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-A workspace of four small library crates, consumed by other repos. There is no binary and
-no application here — every crate is a set of traits, macros, or helpers that something
-else implements. That shapes almost everything below: the interesting failures are things
-that compile *here* and break at a use site.
+A workspace of four small library crates, consumed by other repos, plus one sample
+application. Every library crate is a set of traits, macros, or helpers that something else
+implements; `examples/sample_api` is the one place in this workspace that plays the role of
+that "something else." That shapes almost everything below: the interesting failures are
+things that compile *here* and break at a use site — and the sample is now one of the
+places such a break shows up first, before it ever reaches a downstream repo.
 
 ## Commands
 
@@ -16,6 +18,7 @@ cargo test -p axum_helpers --test route_responses   # one integration target
 cargo test -p macros single_marked_field    # one test, by name substring
 cargo clippy --all-targets
 cargo fmt --check
+cargo run -p sample_api                     # the sample API on http://127.0.0.1:3000
 ```
 
 `--all-targets` and `cargo test` are not interchangeable with `cargo check`. Most of this
@@ -36,6 +39,7 @@ generic_helpers      standalone; str_enum! + file helpers. One dep (error_set).
 sql_traits           database traits over sqlx, generic over the driver. Knows nothing about HTTP.
 axum_helpers    ───▶ sql_traits. Wraps each SQL trait in an axum route handler.
 macros               proc-macro crate. Depends on NONE of the above.
+sample_api      ───▶ all four. A runnable example, not a library; see examples/sample_api.
 ```
 
 The layering is one-way and worth preserving: `sql_traits` must stay free of `axum`, so a
@@ -84,6 +88,14 @@ the re-exports from rule 1. Two consequences:
 The `MaxVecCapacity` derive was deleted outright in v0.6.0 rather than fixed, because it
 emitted a path to a crate in a different repo and nothing here could compile it.
 
+A bare `::sql_traits::…` in generated code resolves only where the *use site* declares
+`sql_traits` as a direct dependency — going through a re-export is not always an option,
+since some of these derives are used by consumers who have no `axum_helpers` to re-export
+it from. `examples/sample_api` is the proof: it derives `macros::Record`/`Update`/
+`Database` and would not build until `sql_traits` was added to its own `Cargo.toml`,
+alongside `axum_helpers`, even though no source file in it imports anything from
+`sql_traits` directly. See `examples/sample_api/CLAUDE.md` for the full finding.
+
 ### 3. Tests are separate crates that consume the library
 
 Files under `tests/` compile as their own crates linking the library externally, which is
@@ -99,6 +111,12 @@ there — read them before adding one.
 The single exception is `macros`, whose tests are in-crate because they assert on the
 token strings its private expansion functions return. Its consumer-perspective coverage
 lives in the other crates' `tests/derive_macros.rs`.
+
+`examples/sample_api` is a fifth vantage point of the same kind, even though it is not
+under a `tests/` directory: it reaches `axum`, `serde`, `sqlx` and `sql_traits` only
+through `axum_helpers`' re-exports (plus a direct `sql_traits` dependency for the reason
+above), so it failing to build is the same class of assertion — the re-export surface
+being sufficient to write a real application, not merely to pass a compile-only fixture.
 
 ## Changelog and versions
 
