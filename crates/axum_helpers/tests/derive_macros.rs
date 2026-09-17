@@ -1,10 +1,12 @@
 //! Consumer-perspective compile test for the route derive macros.
 //!
-//! This is a separate crate whose ONLY dependencies are `axum_helpers` and `macros`.
-//! It deliberately does not depend on `serde`, `sqlx`, or `sql_traits` by name — every
-//! such type is reached through `axum_helpers`' re-exports. If the derive macros emitted
-//! bare `serde::`/`sql_traits::` paths, this crate would fail to compile, so the fact
-//! that it builds is the assertion that the generated output is self-contained.
+//! Every type here is reached through `axum_helpers`' re-exports — `axum_helpers::sqlx`,
+//! `axum_helpers::serde`, `axum_helpers::sql_traits` — so the file demonstrates that the
+//! re-export surface is sufficient to write against these derives. It does not prove the
+//! manifest-level requirement: `axum_helpers`' own `[dependencies]` are in scope for its
+//! test targets, so a bare `sql_traits::` path in derive output would resolve here even
+//! though it must not. `examples/sample_api` is the vantage point that checks that, being
+//! a separate package whose manifest must name what its source names.
 //!
 //! Note: the derived `impl` blocks are type-checked whether or not they are ever used,
 //! so their mere existence forces every generated path and trait bound to resolve.
@@ -26,17 +28,17 @@ use axum_helpers::{
 #[derive(
     axum_helpers::serde::Serialize,
     axum_helpers::serde::Deserialize,
-    macros::Record,
-    macros::Update,
-    macros::BasicCrudRoutes,
-    macros::Database,
+    sql_traits::Record,
+    sql_traits::Update,
+    axum_helpers::BasicCrudRoutes,
+    sql_traits::Database,
 )]
-#[macros(body_derive(axum_helpers::serde::Deserialize))]
-#[macros(update_derive(axum_helpers::serde::Deserialize))]
-#[macros(database = Postgres)]
+#[sql_traits(body_derive(axum_helpers::serde::Deserialize))]
+#[sql_traits(update_derive(axum_helpers::serde::Deserialize))]
+#[sql_traits(database = Postgres)]
 #[serde(crate = "axum_helpers::serde")]
 struct Widget {
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     id: i64,
     name: String,
 }
@@ -116,8 +118,8 @@ impl axum_helpers::sql_traits::UpdateRecord for Widget {
 
 // `GetLatestRoute` is a standalone derive rather than part of `BasicCrudRoutes`, so it gets
 // its own type: `Gizmo` carries only what that one derive needs.
-#[derive(axum_helpers::serde::Serialize, macros::GetLatestRoute, macros::Database)]
-#[macros(database = Postgres)]
+#[derive(axum_helpers::serde::Serialize, axum_helpers::GetLatestRoute, sql_traits::Database)]
+#[sql_traits(database = Postgres)]
 #[serde(crate = "axum_helpers::serde")]
 struct Gizmo {
     #[allow(dead_code)]
@@ -194,15 +196,15 @@ fn get_latest_route_derive_is_self_contained() {
 #[derive(
     axum_helpers::serde::Serialize,
     axum_helpers::serde::Deserialize,
-    macros::Record,
-    macros::ReplaceRoute,
-    macros::Database,
+    sql_traits::Record,
+    axum_helpers::ReplaceRoute,
+    sql_traits::Database,
 )]
-#[macros(body_derive(axum_helpers::serde::Deserialize))]
-#[macros(database = Postgres)]
+#[sql_traits(body_derive(axum_helpers::serde::Deserialize))]
+#[sql_traits(database = Postgres)]
 #[serde(crate = "axum_helpers::serde")]
 struct Sprocket {
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     id: i64,
     label: String,
 }
@@ -256,17 +258,17 @@ fn a_body_carrying_the_primary_key_still_deserializes_with_the_key_discarded() {
 // everything else through `axum_helpers`' re-exports.
 #[derive(
     axum_helpers::serde::Serialize,
-    macros::Record,
-    macros::Update,
-    macros::UpdateRoute,
-    macros::Database,
+    sql_traits::Record,
+    sql_traits::Update,
+    axum_helpers::UpdateRoute,
+    sql_traits::Database,
 )]
-#[macros(body_derive(axum_helpers::serde::Deserialize))]
-#[macros(update_derive(axum_helpers::serde::Deserialize))]
-#[macros(database = Postgres)]
+#[sql_traits(body_derive(axum_helpers::serde::Deserialize))]
+#[sql_traits(update_derive(axum_helpers::serde::Deserialize))]
+#[sql_traits(database = Postgres)]
 #[serde(crate = "axum_helpers::serde")]
 struct Cog {
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     id: i64,
     label: String,
     /// Nullable, so the generated update field is doubly wrapped and carries the helper.
@@ -334,18 +336,18 @@ fn the_derived_update_type_distinguishes_an_absent_field_from_an_explicit_null()
 
 #[derive(
     axum_helpers::serde::Serialize,
-    macros::Record,
-    macros::GetRecordRoute,
-    macros::DeleteRoute,
-    macros::Database,
+    sql_traits::Record,
+    axum_helpers::GetRecordRoute,
+    axum_helpers::DeleteRoute,
+    sql_traits::Database,
 )]
-#[macros(body_derive(axum_helpers::serde::Deserialize))]
-#[macros(database = Postgres)]
+#[sql_traits(body_derive(axum_helpers::serde::Deserialize))]
+#[sql_traits(database = Postgres)]
 #[serde(crate = "axum_helpers::serde")]
 struct Membership {
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     user_id: i64,
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     group_id: i64,
     role: String,
 }

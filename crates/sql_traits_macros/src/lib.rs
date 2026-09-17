@@ -1,4 +1,13 @@
-//! Derive macros for the `sql_traits` and `axum_helpers` route traits.
+//! The derive macros behind `sql_traits`' record, update and database traits.
+//!
+//! Private plumbing: consumers reach these derives through `sql_traits`, never by declaring
+//! this crate. It depends on nothing in this workspace — including `sql_traits` itself —
+//! which is what makes the absolute paths its output emits testable from the outside rather
+//! than resolvable by accident.
+//!
+//! Every path this crate emits is rooted at `::sql_traits::` (or `::core::`), reaching
+//! `serde` and `sqlx` through `::sql_traits::serde::` and `::sql_traits::sqlx::` rather
+//! than naming those crates directly. `every_emitted_path_anchors_at_sql_traits` enforces it.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -8,26 +17,26 @@ use syn::{
     Token, Type, Visibility, parse_quote, punctuated::Punctuated,
 };
 
-/// The complete list of directives `#[macros(...)]` accepts, named in every error so a
+/// The complete list of directives `#[sql_traits(...)]` accepts, named in every error so a
 /// typo says what to write instead.
-const MACROS_ATTR_HELP: &str = "`#[macros(...)]` accepts exactly `primary_key` on a field \
-     and `body_derive(Trait, ...)`, `update_derive(Trait, ...)` or `database = Db` on the \
-     struct";
+const SQL_TRAITS_ATTR_HELP: &str = "`#[sql_traits(...)]` accepts exactly `primary_key` on a \
+     field and `body_derive(Trait, ...)`, `update_derive(Trait, ...)` or `database = Db` on \
+     the struct";
 
-/// The `sqlx::Database` implementations `#[macros(database = ...)]` accepts, named in the
+/// The `sqlx::Database` implementations `#[sql_traits(database = ...)]` accepts, named in the
 /// error so a typo says what to write instead. A consumer with a database outside this set
 /// writes the three-line `HasDatabase` impl by hand.
 const DATABASES: [&str; 4] = ["Postgres", "Sqlite", "MySql", "Any"];
 
-/// One recognized `#[macros(...)]` directive.
+/// One recognized `#[sql_traits(...)]` directive.
 enum MacrosDirective {
-    /// `#[macros(primary_key)]` — this field is (part of) the primary key.
+    /// `#[sql_traits(primary_key)]` — this field is (part of) the primary key.
     PrimaryKey,
-    /// `#[macros(body_derive(A, B))]` — the derives to put on the generated body type.
+    /// `#[sql_traits(body_derive(A, B))]` — the derives to put on the generated body type.
     BodyDerive(Vec<Path>),
-    /// `#[macros(update_derive(A, B))]` — the derives to put on the generated update type.
+    /// `#[sql_traits(update_derive(A, B))]` — the derives to put on the generated update type.
     UpdateDerive(Vec<Path>),
-    /// `#[macros(database = Sqlite)]` — the database this type's queries run against.
+    /// `#[sql_traits(database = Sqlite)]` — the database this type's queries run against.
     Database(Ident),
 }
 
@@ -37,7 +46,7 @@ enum MacrosDirective {
 /// not consume is a typo or is there for another derive on the same struct. `Record` and
 /// `Update` are designed to be used together, so each tolerates the other's list rather
 /// than rejecting it; a directive neither of them recognizes is still a hard error, caught
-/// earlier in `parse_macros_attr`.
+/// earlier in `parse_sql_traits_attr`.
 #[derive(Clone, Copy)]
 enum DeriveList {
     /// `Record`, which reads `body_derive`.
@@ -49,15 +58,15 @@ enum DeriveList {
     Neither,
 }
 
-/// Parses one `#[macros(...)]` attribute, rejecting anything that is not a recognized
+/// Parses one `#[sql_traits(...)]` attribute, rejecting anything that is not a recognized
 /// directive.
 ///
 /// Every failure is a hard error rather than a skip. A silently ignored directive is
-/// invisible and, for `primary_key`, actively dangerous: `#[macros(primary_key,)]` would
+/// invisible and, for `primary_key`, actively dangerous: `#[sql_traits(primary_key,)]` would
 /// leave the field out of the key *and* put it into the generated request body — exactly
 /// the key leak the body type exists to prevent, and one no round-trip test can catch,
 /// because the isomorphism still holds when the partition is wrong.
-fn parse_macros_attr(attr: &Attribute) -> syn::Result<MacrosDirective> {
+fn parse_sql_traits_attr(attr: &Attribute) -> syn::Result<MacrosDirective> {
     let unrecognized = || {
         // Report the attribute's own tokens, so the message names what was written.
         let found = match &attr.meta {
@@ -66,7 +75,7 @@ fn parse_macros_attr(attr: &Attribute) -> syn::Result<MacrosDirective> {
         };
         syn::Error::new_spanned(
             attr,
-            format!("unrecognized directive `{found}`: {MACROS_ATTR_HELP}"),
+            format!("unrecognized directive `{found}`: {SQL_TRAITS_ATTR_HELP}"),
         )
     };
 
@@ -119,15 +128,18 @@ fn parse_macros_attr(attr: &Attribute) -> syn::Result<MacrosDirective> {
     }
 }
 
-/// Every `#[macros(...)]` directive on one item, paired with the attribute it came from so
+/// Every `#[sql_traits(...)]` directive on one item, paired with the attribute it came from so
 /// a misplaced directive can be reported on the right span. Errors are combined, so a type
 /// with several bad attributes reports all of them at once.
-fn macros_directives(attrs: &[Attribute]) -> syn::Result<Vec<(&Attribute, MacrosDirective)>> {
+fn sql_traits_directives(attrs: &[Attribute]) -> syn::Result<Vec<(&Attribute, MacrosDirective)>> {
     let mut directives = Vec::new();
     let mut errors: Option<syn::Error> = None;
 
-    for attr in attrs.iter().filter(|attr| attr.path().is_ident("macros")) {
-        match parse_macros_attr(attr) {
+    for attr in attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("sql_traits"))
+    {
+        match parse_sql_traits_attr(attr) {
             Ok(directive) => directives.push((attr, directive)),
             Err(error) => match &mut errors {
                 Some(existing) => existing.combine(error),
@@ -154,13 +166,13 @@ fn misplaced_on_field(attr: &Attribute, directive: &str) -> syn::Error {
     )
 }
 
-/// Whether a field is marked `#[macros(primary_key)]`.
+/// Whether a field is marked `#[sql_traits(primary_key)]`.
 ///
-/// Anything else in a field's `#[macros(...)]` is an error: the alternative is demoting a
+/// Anything else in a field's `#[sql_traits(...)]` is an error: the alternative is demoting a
 /// key field into the request body without a word of diagnostics.
 fn is_pk_attr(attrs: &[Attribute]) -> syn::Result<bool> {
     let mut marked = false;
-    for (attr, directive) in macros_directives(attrs)? {
+    for (attr, directive) in sql_traits_directives(attrs)? {
         match directive {
             MacrosDirective::PrimaryKey => marked = true,
             MacrosDirective::BodyDerive(_) => return Err(misplaced_on_field(attr, "body_derive")),
@@ -171,23 +183,6 @@ fn is_pk_attr(attrs: &[Attribute]) -> syn::Result<bool> {
         }
     }
     Ok(marked)
-}
-
-/// Emits `impl <trait_path> for <name> {}` for a route trait whose requirements are
-/// enforced by the trait declaration itself, so the impl body is empty.
-fn marker_impl(name: &Ident, trait_path: TokenStream2) -> TokenStream2 {
-    quote! { impl #trait_path for #name {} }
-}
-
-/// Emits the impl for an insert-style route trait. These carry a `'de` lifetime and require
-/// their SQL trait's `ReturnType` to be `Serialize`, so they cannot use `marker_impl`.
-fn insert_route_impl(name: &Ident, route: TokenStream2, sql_trait: TokenStream2) -> TokenStream2 {
-    quote! {
-        impl<'de> ::axum_helpers::#route<'de> for #name
-        where
-            <#name as ::axum_helpers::sql_traits::#sql_trait>::ReturnType:
-                ::axum_helpers::serde::Serialize {}
-    }
 }
 
 /// Reads one marked field out of `&self` by value.
@@ -390,7 +385,7 @@ fn try_expand_primary_key(input: TokenStream2) -> syn::Result<TokenStream2> {
     if pk_fields.is_empty() {
         return Err(syn::Error::new_spanned(
             &input,
-            "No field marked with #[macros(primary_key)]. Mark one or more fields.",
+            "No field marked with #[sql_traits(primary_key)]. Mark one or more fields.",
         ));
     }
 
@@ -422,7 +417,7 @@ fn try_expand_primary_key(input: TokenStream2) -> syn::Result<TokenStream2> {
 /// lets `#[derive(Record, Update)]` carry both `body_derive` and `update_derive`.
 fn container_derives(attrs: &[Attribute], reader: DeriveList) -> syn::Result<Vec<Path>> {
     let mut derives = Vec::new();
-    for (attr, directive) in macros_directives(attrs)? {
+    for (attr, directive) in sql_traits_directives(attrs)? {
         match (directive, reader) {
             (MacrosDirective::PrimaryKey, _) => {
                 return Err(syn::Error::new_spanned(
@@ -440,7 +435,7 @@ fn container_derives(attrs: &[Attribute], reader: DeriveList) -> syn::Result<Vec
             (MacrosDirective::BodyDerive(_), DeriveList::Neither) => {
                 return Err(syn::Error::new_spanned(
                     attr,
-                    "`body_derive` is only read by `#[derive(macros::Record)]`; the \
+                    "`body_derive` is only read by `#[derive(sql_traits::Record)]`; the \
                      `PrimaryKey` derive generates no body type",
                 ));
             }
@@ -475,14 +470,14 @@ fn is_option(ty: &Type) -> bool {
     })
 }
 
-/// Everything except this crate's own `#[macros(...)]` attributes, which must not reach
+/// Everything except this crate's own `#[sql_traits(...)]` attributes, which must not reach
 /// the generated type. Forwarding the rest is what keeps `serde`/`ts-rs` renames aligned
 /// between a record and its body — if they diverged, a generated client would disagree
 /// with the wire format.
 fn forwarded_attrs(attrs: &[Attribute]) -> Vec<Attribute> {
     attrs
         .iter()
-        .filter(|attr| !attr.path().is_ident("macros"))
+        .filter(|attr| !attr.path().is_ident("sql_traits"))
         .cloned()
         .collect()
 }
@@ -530,7 +525,7 @@ fn try_expand_record(input: TokenStream2) -> syn::Result<TokenStream2> {
     if pk_fields.is_empty() {
         return Err(syn::Error::new_spanned(
             &input,
-            "No field marked with #[macros(primary_key)]. Mark one or more fields.",
+            "No field marked with #[sql_traits(primary_key)]. Mark one or more fields.",
         ));
     }
 
@@ -678,7 +673,7 @@ fn try_expand_update(input: TokenStream2) -> syn::Result<TokenStream2> {
     if !has_primary_key {
         return Err(syn::Error::new_spanned(
             &input,
-            "No field marked with #[macros(primary_key)]. Mark one or more fields.",
+            "No field marked with #[sql_traits(primary_key)]. Mark one or more fields.",
         ));
     }
 
@@ -757,7 +752,7 @@ fn database_impl(name: &Ident, database: &Ident) -> TokenStream2 {
 /// with a message about Postgres on a consumer that never enabled that driver.
 fn container_database(attrs: &[Attribute], name: &Ident) -> syn::Result<Ident> {
     let mut found: Option<Ident> = None;
-    for (attr, directive) in macros_directives(attrs)? {
+    for (attr, directive) in sql_traits_directives(attrs)? {
         match directive {
             MacrosDirective::Database(ident) => {
                 if found.is_some() {
@@ -782,7 +777,7 @@ fn container_database(attrs: &[Attribute], name: &Ident) -> syn::Result<Ident> {
         syn::Error::new_spanned(
             name,
             format!(
-                "`#[derive(macros::Database)]` requires `#[macros(database = Db)]`, one of {}",
+                "`#[derive(sql_traits::Database)]` requires `#[sql_traits(database = Db)]`, one of {}",
                 DATABASES.join(", ")
             ),
         )
@@ -801,56 +796,7 @@ fn expand_database(input: TokenStream2) -> TokenStream2 {
     }
 }
 
-/// Body shared by the standalone marker derives.
-fn expand_marker(input: TokenStream2, trait_path: TokenStream2) -> TokenStream2 {
-    match syn::parse2::<DeriveInput>(input) {
-        Ok(input) => marker_impl(&input.ident, trait_path),
-        Err(error) => error.to_compile_error(),
-    }
-}
-
-/// Body shared by the standalone insert-route derives.
-fn expand_insert_route(
-    input: TokenStream2,
-    route: TokenStream2,
-    sql_trait: TokenStream2,
-) -> TokenStream2 {
-    match syn::parse2::<DeriveInput>(input) {
-        Ok(input) => insert_route_impl(&input.ident, route, sql_trait),
-        Err(error) => error.to_compile_error(),
-    }
-}
-
-/// Body of the `BasicCrudRoutes` derive. Built from the same emitters as the standalone
-/// derives, so the bundle and the individual macros cannot drift.
-fn expand_basic_crud_routes(input: TokenStream2) -> TokenStream2 {
-    let input: DeriveInput = match syn::parse2(input) {
-        Ok(parsed) => parsed,
-        Err(error) => return error.to_compile_error(),
-    };
-    let name = &input.ident;
-
-    let markers = [
-        quote! { ::axum_helpers::GetRecordRoute },
-        quote! { ::axum_helpers::ListRecordsRoute },
-        quote! { ::axum_helpers::ReplaceRoute },
-        quote! { ::axum_helpers::UpdateRoute },
-        quote! { ::axum_helpers::DeleteRoute },
-    ]
-    .into_iter()
-    .map(|trait_path| marker_impl(name, trait_path));
-
-    let create = insert_route_impl(name, quote!(CreateRoute), quote!(InsertRecord));
-    let bulk_create = insert_route_impl(name, quote!(BulkCreateRoute), quote!(BulkInsertRecords));
-
-    quote! {
-        #( #markers )*
-        #create
-        #bulk_create
-    }
-}
-
-/// Derive `HasPrimaryKey` by inspecting fields marked with #[macros(primary_key)].
+/// Derive `HasPrimaryKey` by inspecting fields marked with #[sql_traits(primary_key)].
 ///
 /// One marked field gives `PrimaryKey = <that field's type>`. Several give a generated
 /// `{Name}PrimaryKey` struct with one field per marked field, named and typed as the record
@@ -869,7 +815,7 @@ fn expand_basic_crud_routes(input: TokenStream2) -> TokenStream2 {
 ///
 /// `primary_key` reads the marked fields back off `&self` by cloning them, so every marked
 /// field's type must be `Clone`.
-#[proc_macro_derive(PrimaryKey, attributes(macros))]
+#[proc_macro_derive(PrimaryKey, attributes(sql_traits))]
 pub fn derive_primary_key(input: TokenStream) -> TokenStream {
     expand_primary_key(input.into()).into()
 }
@@ -879,24 +825,24 @@ pub fn derive_primary_key(input: TokenStream) -> TokenStream {
 /// associating the two, and both `From` conversions between them.
 ///
 /// Name the derives for the generated body type with
-/// `#[macros(body_derive(Serialize, Deserialize))]`: a derive macro cannot see sibling
+/// `#[sql_traits(body_derive(Serialize, Deserialize))]`: a derive macro cannot see sibling
 /// `#[derive(...)]` attributes, so they cannot be copied automatically. Every other
 /// attribute on the record and its body fields — `#[serde(rename_all = "...")]` and the
 /// like — is forwarded to the body automatically. Note that this includes
 /// `#[serde(deny_unknown_fields)]`, which makes the generated body *reject* a payload
 /// carrying the primary key rather than ignoring it.
 ///
-/// A `#[macros(...)]` attribute that is not `primary_key` on a field or `body_derive(...)`
+/// A `#[sql_traits(...)]` attribute that is not `primary_key` on a field or `body_derive(...)`
 /// on the struct is a compile error, never a silent no-op.
 ///
 /// A composite key gets the same generated `{Name}PrimaryKey` struct
-/// `#[derive(macros::PrimaryKey)]` emits, from the same code — see that derive for what the
+/// `#[derive(sql_traits::PrimaryKey)]` emits, from the same code — see that derive for what the
 /// struct looks like and why it is not a tuple.
 ///
 /// Do not derive `PrimaryKey` alongside this; both emit `impl HasPrimaryKey` (and, for a
 /// composite key, both emit `{Name}PrimaryKey`), so the result is a pile of duplicate-item
 /// and duplicate-impl errors.
-#[proc_macro_derive(Record, attributes(macros))]
+#[proc_macro_derive(Record, attributes(sql_traits))]
 pub fn derive_record(input: TokenStream) -> TokenStream {
     expand_record(input.into()).into()
 }
@@ -906,7 +852,7 @@ pub fn derive_record(input: TokenStream) -> TokenStream {
 /// `HasUpdateFields`/`UpdateFields` pair associating it with the record.
 ///
 /// Name the derives for the generated type with
-/// `#[macros(update_derive(Deserialize))]`, for the same reason `Record` needs
+/// `#[sql_traits(update_derive(Deserialize))]`, for the same reason `Record` needs
 /// `body_derive`: a derive macro cannot see sibling `#[derive(...)]` attributes. Every
 /// other attribute on the record and its fields is forwarded, so `serde` renames stay
 /// aligned between a record and its update type.
@@ -917,15 +863,15 @@ pub fn derive_record(input: TokenStream) -> TokenStream {
 /// A type *alias* for `Option<T>` cannot be recognized — no proc macro can resolve one —
 /// and such a field simply loses the ability to be cleared; it is never a type error.
 ///
-/// Designed to sit alongside `#[derive(macros::Record)]`; the two read different container
+/// Designed to sit alongside `#[derive(sql_traits::Record)]`; the two read different container
 /// directives and generate different types.
-#[proc_macro_derive(Update, attributes(macros))]
+#[proc_macro_derive(Update, attributes(sql_traits))]
 pub fn derive_update(input: TokenStream) -> TokenStream {
     expand_update(input.into()).into()
 }
 
 /// Derive `Database` — associates a type with the one database its queries run against,
-/// named by `#[macros(database = Sqlite)]`.
+/// named by `#[sql_traits(database = Sqlite)]`.
 ///
 /// Standalone rather than folded into `Record`, so that a hand-written record and a
 /// separate insert-side type (a `NewWidget` implementing `InsertRecord`) can both use it
@@ -934,107 +880,9 @@ pub fn derive_update(input: TokenStream) -> TokenStream {
 /// The directive is required; its absence is a compile error naming the accepted set,
 /// never a silent default. `Record` and `Update` tolerate the directive without consuming
 /// it, exactly as they already tolerate each other's derive lists.
-#[proc_macro_derive(Database, attributes(macros))]
+#[proc_macro_derive(Database, attributes(sql_traits))]
 pub fn derive_database(input: TokenStream) -> TokenStream {
     expand_database(input.into()).into()
-}
-
-/// Derive `DeleteRoute` (requires the type to implement DeleteRecord + HasPrimaryKey).
-#[proc_macro_derive(DeleteRoute)]
-pub fn derive_delete_route(input: TokenStream) -> TokenStream {
-    expand_marker(input.into(), quote! { ::axum_helpers::DeleteRoute }).into()
-}
-
-/// Derive `CreateRoute` (requires the type to implement InsertRecord + Deserialize).
-#[proc_macro_derive(CreateRoute)]
-pub fn derive_create_route(input: TokenStream) -> TokenStream {
-    expand_insert_route(input.into(), quote!(CreateRoute), quote!(InsertRecord)).into()
-}
-
-/// Derive `BulkCreateRoute` (requires the type to implement BulkInsertRecords + Deserialize).
-#[proc_macro_derive(BulkCreateRoute)]
-pub fn derive_bulk_create_route(input: TokenStream) -> TokenStream {
-    expand_insert_route(
-        input.into(),
-        quote!(BulkCreateRoute),
-        quote!(BulkInsertRecords),
-    )
-    .into()
-}
-
-/// Derive `GetLatestRoute` (requires the type to implement GetLatestRecord + Serialize).
-#[proc_macro_derive(GetLatestRoute)]
-pub fn derive_get_latest_route(input: TokenStream) -> TokenStream {
-    expand_marker(input.into(), quote! { ::axum_helpers::GetLatestRoute }).into()
-}
-
-/// Derive `GetRecordRoute` (requires the type to implement GetRecord + HasPrimaryKey, with a
-/// `PrimaryKey` that is `DeserializeOwned`).
-#[proc_macro_derive(GetRecordRoute)]
-pub fn derive_get_record_route(input: TokenStream) -> TokenStream {
-    expand_marker(input.into(), quote! { ::axum_helpers::GetRecordRoute }).into()
-}
-
-/// Derive `ListRecordsRoute` (requires the type to implement ListRecords + Serialize).
-#[proc_macro_derive(ListRecordsRoute)]
-pub fn derive_list_records_route(input: TokenStream) -> TokenStream {
-    expand_marker(input.into(), quote! { ::axum_helpers::ListRecordsRoute }).into()
-}
-
-/// Derive `ReplaceRoute` (requires the type to implement `ReplaceRecord` + `HasRequestBody`,
-/// with a `DeserializeOwned` `PrimaryKey` and `RequestBody`).
-///
-/// `BasicCrudRoutes` bundles this one, so a type deriving that does not need this as well.
-/// Reach for it on a type that wants replace without the rest of CRUD.
-#[proc_macro_derive(ReplaceRoute)]
-pub fn derive_replace_route(input: TokenStream) -> TokenStream {
-    expand_marker(input.into(), quote! { ::axum_helpers::ReplaceRoute }).into()
-}
-
-/// Derive `UpdateRoute` (requires the type to implement `UpdateRecord` + `HasUpdateFields`,
-/// with a `DeserializeOwned` `PrimaryKey` and `UpdateFields`).
-///
-/// `BasicCrudRoutes` bundles this one, so a type deriving that does not need this as well.
-/// Reach for it on a type that wants partial updates without the rest of CRUD.
-#[proc_macro_derive(UpdateRoute)]
-pub fn derive_update_route(input: TokenStream) -> TokenStream {
-    expand_marker(input.into(), quote! { ::axum_helpers::UpdateRoute }).into()
-}
-
-/// Derive `BasicCrudRoutes` — implements every primary-key CRUD route trait for a type:
-/// `CreateRoute` and `BulkCreateRoute` (create), `GetRecordRoute` and `ListRecordsRoute`
-/// (read), `ReplaceRoute` and `UpdateRoute` (update), and `DeleteRoute` (delete).
-///
-/// Each of those route traits has supertraits, so the deriving type must implement all of
-/// `HasPrimaryKey` (with a `DeserializeOwned` `PrimaryKey`), `HasRequestBody` and
-/// `HasUpdateFields` (with `DeserializeOwned` associated types), `GetRecord`, `ListRecords`,
-/// `InsertRecord`, `BulkInsertRecords`, `ReplaceRecord`, `UpdateRecord`, and `DeleteRecord`,
-/// plus `Serialize` and `Deserialize`, with both insert traits' `ReturnType` also
-/// `Serialize`. A missing one is an error on the generated impl naming the trait, not on the
-/// derive.
-///
-/// In practice that means deriving `Record` and `Update` alongside it: those supply
-/// `HasPrimaryKey`, `HasRequestBody` and `HasUpdateFields`, and generate the body and update
-/// types the two write routes take as request bodies.
-///
-/// `GetLatestRoute` is deliberately excluded. "The most recent row" is a domain-specific
-/// query rather than a CRUD operation, and bundling it would force every deriving type to
-/// implement `GetLatestRecord` whether or not it has a meaningful notion of "latest".
-#[proc_macro_derive(BasicCrudRoutes)]
-pub fn derive_basic_crud_routes(input: TokenStream) -> TokenStream {
-    expand_basic_crud_routes(input.into()).into()
-}
-
-/// Derive `MaxVecCapacity` — a marker impl opting a type into the trait's provided
-/// `estimate_max_vec_capacity_from_file`.
-///
-/// The emitted path is absolute and aimed at `generic_helpers`' root re-export; both are
-/// load-bearing, and `generic_helpers/CLAUDE.md` records why. That crate's
-/// `tests/derive_macros.rs` is the consumer-perspective compile test that fails if the
-/// path stops resolving from outside the crate.
-#[proc_macro_derive(MaxVecCapacity)]
-pub fn derive_max_vec_capacity(input: TokenStream) -> TokenStream {
-    expand_marker(input.into(), quote! { ::generic_helpers::MaxVecCapacity }).into()
 }
 
 #[cfg(test)]
@@ -1047,7 +895,7 @@ mod tests {
 
     #[test]
     fn single_marked_field_becomes_the_primary_key_type() {
-        let out = expand("struct User { #[macros(primary_key)] id: i64, name: String }");
+        let out = expand("struct User { #[sql_traits(primary_key)] id: i64, name: String }");
         assert!(out.contains("type PrimaryKey = i64"), "{out}");
     }
 
@@ -1058,7 +906,7 @@ mod tests {
     #[test]
     fn multiple_marked_fields_become_a_named_struct() {
         let out = expand(
-            "struct Membership { #[macros(primary_key)] user_id: i64, #[macros(primary_key)] group_id: u32 }",
+            "struct Membership { #[sql_traits(primary_key)] user_id: i64, #[sql_traits(primary_key)] group_id: u32 }",
         );
         assert!(
             out.contains("type PrimaryKey = MembershipPrimaryKey"),
@@ -1075,7 +923,7 @@ mod tests {
     #[test]
     fn the_generated_key_struct_carries_the_fixed_derive_set() {
         let out = expand(
-            "struct Membership { #[macros(primary_key)] user_id: i64, #[macros(primary_key)] group_id: u32 }",
+            "struct Membership { #[sql_traits(primary_key)] user_id: i64, #[sql_traits(primary_key)] group_id: u32 }",
         );
         for expected in [
             ":: core :: clone :: Clone",
@@ -1092,7 +940,7 @@ mod tests {
     // and wrapping would break every `get_record(&pool, 5)` for no gain.
     #[test]
     fn a_single_marked_field_generates_no_key_struct() {
-        let out = expand("struct User { #[macros(primary_key)] id: i64, name: String }");
+        let out = expand("struct User { #[sql_traits(primary_key)] id: i64, name: String }");
         assert!(!out.contains("UserPrimaryKey"), "{out}");
         assert!(!out.contains("struct"), "{out}");
     }
@@ -1103,7 +951,7 @@ mod tests {
     #[test]
     fn the_record_attributes_do_not_reach_the_key_struct() {
         let out = expand(
-            "#[serde(rename_all = \"camelCase\")] struct Membership { #[macros(primary_key)] user_id: i64, #[macros(primary_key)] group_id: u32 }",
+            "#[serde(rename_all = \"camelCase\")] struct Membership { #[sql_traits(primary_key)] user_id: i64, #[sql_traits(primary_key)] group_id: u32 }",
         );
         assert!(!out.contains("rename_all"), "{out}");
     }
@@ -1111,7 +959,7 @@ mod tests {
     #[test]
     fn the_key_struct_takes_the_record_visibility_and_keeps_each_field_own() {
         let out = expand(
-            "pub struct Membership { #[macros(primary_key)] pub(crate) user_id: i64, #[macros(primary_key)] group_id: u32 }",
+            "pub struct Membership { #[sql_traits(primary_key)] pub(crate) user_id: i64, #[sql_traits(primary_key)] group_id: u32 }",
         );
         assert!(out.contains("pub struct MembershipPrimaryKey"), "{out}");
         assert!(
@@ -1125,14 +973,15 @@ mod tests {
     // one place it could not be fixed.
     #[test]
     fn a_composite_key_on_a_tuple_struct_is_a_compile_error() {
-        let out = expand("struct Pair(#[macros(primary_key)] i64, #[macros(primary_key)] u32);");
+        let out =
+            expand("struct Pair(#[sql_traits(primary_key)] i64, #[sql_traits(primary_key)] u32);");
         assert!(out.contains("compile_error"), "{out}");
         assert!(out.contains("needs named fields"), "{out}");
     }
 
     #[test]
     fn single_marked_field_is_read_back_by_primary_key() {
-        let out = expand("struct User { #[macros(primary_key)] id: i64, name: String }");
+        let out = expand("struct User { #[sql_traits(primary_key)] id: i64, name: String }");
         assert!(
             out.contains(":: core :: clone :: Clone :: clone (& self . id)"),
             "{out}"
@@ -1142,7 +991,7 @@ mod tests {
     #[test]
     fn multiple_marked_fields_are_read_back_into_the_key_struct_by_name() {
         let out = expand(
-            "struct Membership { #[macros(primary_key)] user_id: i64, #[macros(primary_key)] group_id: u32 }",
+            "struct Membership { #[sql_traits(primary_key)] user_id: i64, #[sql_traits(primary_key)] group_id: u32 }",
         );
         assert!(
             out.contains(
@@ -1154,7 +1003,7 @@ mod tests {
 
     #[test]
     fn tuple_struct_fields_are_read_back_by_index() {
-        let out = expand("struct UserId(#[macros(primary_key)] i64, String);");
+        let out = expand("struct UserId(#[sql_traits(primary_key)] i64, String);");
         assert!(out.contains("type PrimaryKey = i64"), "{out}");
         assert!(
             out.contains(":: core :: clone :: Clone :: clone (& self . 0)"),
@@ -1175,55 +1024,6 @@ mod tests {
         assert!(out.contains("can only be derived for structs"), "{out}");
     }
 
-    #[test]
-    fn marker_derives_emit_an_empty_impl_for_the_named_trait() {
-        let out = expand_marker(
-            "struct Widget { id: i64 }".parse().unwrap(),
-            quote! { ::axum_helpers::GetRecordRoute },
-        )
-        .to_string();
-        assert_eq!(out, "impl :: axum_helpers :: GetRecordRoute for Widget { }");
-    }
-
-    #[test]
-    fn insert_route_derives_bound_the_sql_traits_return_type() {
-        let out = expand_insert_route(
-            "struct Widget { id: i64 }".parse().unwrap(),
-            quote!(CreateRoute),
-            quote!(InsertRecord),
-        )
-        .to_string();
-        assert!(
-            out.contains("impl < 'de > :: axum_helpers :: CreateRoute < 'de > for Widget"),
-            "{out}"
-        );
-        assert!(out.contains("InsertRecord > :: ReturnType"), "{out}");
-    }
-
-    #[test]
-    fn basic_crud_routes_emits_every_route_impl() {
-        let out =
-            expand_basic_crud_routes("struct Widget { id: i64 }".parse().unwrap()).to_string();
-        for expected in [
-            "GetRecordRoute for Widget",
-            "ListRecordsRoute for Widget",
-            "DeleteRoute for Widget",
-            "ReplaceRoute for Widget",
-            "UpdateRoute for Widget",
-            "CreateRoute < 'de > for Widget",
-            "BulkCreateRoute < 'de > for Widget",
-        ] {
-            assert!(out.contains(expected), "missing {expected} in {out}");
-        }
-    }
-
-    #[test]
-    fn basic_crud_routes_does_not_emit_get_latest_route() {
-        let out =
-            expand_basic_crud_routes("struct Widget { id: i64 }".parse().unwrap()).to_string();
-        assert!(!out.contains("GetLatestRoute"), "{out}");
-    }
-
     fn expand_rec(src: &str) -> String {
         expand_record(src.parse().unwrap()).to_string()
     }
@@ -1231,7 +1031,7 @@ mod tests {
     #[test]
     fn record_emits_a_body_struct_without_the_key_fields() {
         let out = expand_rec(
-            "pub struct Widget { #[macros(primary_key)] pub id: i64, pub name: String }",
+            "pub struct Widget { #[sql_traits(primary_key)] pub id: i64, pub name: String }",
         );
         assert!(out.contains("pub struct WidgetBody"), "{out}");
         assert!(out.contains("pub name : String"), "{out}");
@@ -1244,15 +1044,15 @@ mod tests {
     #[test]
     fn record_applies_the_requested_body_derives() {
         let out = expand_rec(
-            "#[macros(body_derive(Debug, PartialEq))] struct Widget { #[macros(primary_key)] id: i64, name: String }",
+            "#[sql_traits(body_derive(Debug, PartialEq))] struct Widget { #[sql_traits(primary_key)] id: i64, name: String }",
         );
         assert!(out.contains("# [derive (Debug , PartialEq)]"), "{out}");
     }
 
     #[test]
-    fn record_forwards_non_macros_attributes_to_the_body() {
+    fn record_forwards_non_sql_traits_attributes_to_the_body() {
         let out = expand_rec(
-            "#[serde(rename_all = \"camelCase\")] struct Widget { #[macros(primary_key)] id: i64, #[serde(rename = \"n\")] name: String }",
+            "#[serde(rename_all = \"camelCase\")] struct Widget { #[sql_traits(primary_key)] id: i64, #[serde(rename = \"n\")] name: String }",
         );
         assert!(
             out.contains("rename_all"),
@@ -1263,14 +1063,14 @@ mod tests {
             "field attr must forward: {out}"
         );
         assert!(
-            !out.contains("macros"),
-            "macros attrs must not forward: {out}"
+            !out.contains("# [sql_traits"),
+            "sql_traits attrs must not forward: {out}"
         );
     }
 
     #[test]
     fn record_rejects_tuple_structs() {
-        let out = expand_rec("struct Widget(#[macros(primary_key)] i64, String);");
+        let out = expand_rec("struct Widget(#[sql_traits(primary_key)] i64, String);");
         assert!(out.contains("compile_error"), "{out}");
         assert!(out.contains("named fields"), "{out}");
     }
@@ -1284,7 +1084,7 @@ mod tests {
 
     #[test]
     fn record_emits_both_association_impls() {
-        let out = expand_rec("struct Widget { #[macros(primary_key)] id: i64, name: String }");
+        let out = expand_rec("struct Widget { #[sql_traits(primary_key)] id: i64, name: String }");
         assert!(
             out.contains(":: sql_traits :: HasRequestBody for Widget"),
             "{out}"
@@ -1299,7 +1099,7 @@ mod tests {
 
     #[test]
     fn record_emits_both_from_conversions() {
-        let out = expand_rec("struct Widget { #[macros(primary_key)] id: i64, name: String }");
+        let out = expand_rec("struct Widget { #[sql_traits(primary_key)] id: i64, name: String }");
         assert!(
             out.contains("From < (i64 , WidgetBody) > for Widget"),
             "{out}"
@@ -1307,13 +1107,13 @@ mod tests {
         assert!(out.contains("From < Widget > for WidgetBody"), "{out}");
     }
 
-    // `#[macros(...)]` validation. Each of these was silently ignored before, and the
+    // `#[sql_traits(...)]` validation. Each of these was silently ignored before, and the
     // first one is the dangerous shape: a malformed key marker demoted `course_id` out of
     // the primary key and into the generated body, leaking the key into the request body.
     #[test]
     fn a_stray_comma_in_the_key_marker_is_a_compile_error() {
         let out = expand_rec(
-            "struct Enrollment { #[macros(primary_key)] student_id: i64, #[macros(primary_key,)] course_id: i64, grade: String }",
+            "struct Enrollment { #[sql_traits(primary_key)] student_id: i64, #[sql_traits(primary_key,)] course_id: i64, grade: String }",
         );
         assert!(out.contains("compile_error"), "{out}");
         assert!(out.contains("unrecognized directive"), "{out}");
@@ -1322,14 +1122,14 @@ mod tests {
 
     #[test]
     fn a_stray_comma_in_the_key_marker_is_a_compile_error_for_primary_key_too() {
-        let out = expand("struct User { #[macros(primary_key,)] id: i64, name: String }");
+        let out = expand("struct User { #[sql_traits(primary_key,)] id: i64, name: String }");
         assert!(out.contains("compile_error"), "{out}");
         assert!(out.contains("unrecognized directive"), "{out}");
     }
 
     #[test]
     fn an_unrecognized_directive_name_is_a_compile_error() {
-        let out = expand_rec("struct Widget { #[macros(primary_ky)] id: i64, name: String }");
+        let out = expand_rec("struct Widget { #[sql_traits(primary_ky)] id: i64, name: String }");
         assert!(out.contains("compile_error"), "{out}");
         assert!(out.contains("unrecognized directive `primary_ky`"), "{out}");
         assert!(out.contains("accepts exactly"), "{out}");
@@ -1338,7 +1138,7 @@ mod tests {
     #[test]
     fn body_derive_in_a_non_list_form_is_a_compile_error() {
         let out = expand_rec(
-            "#[macros(body_derive = \"Debug\")] struct Widget { #[macros(primary_key)] id: i64, name: String }",
+            "#[sql_traits(body_derive = \"Debug\")] struct Widget { #[sql_traits(primary_key)] id: i64, name: String }",
         );
         assert!(out.contains("compile_error"), "{out}");
         assert!(out.contains("unrecognized directive"), "{out}");
@@ -1348,7 +1148,7 @@ mod tests {
     #[test]
     fn the_plural_body_derives_typo_is_a_compile_error() {
         let out = expand_rec(
-            "#[macros(body_derives(Debug))] struct Widget { #[macros(primary_key)] id: i64, name: String }",
+            "#[sql_traits(body_derives(Debug))] struct Widget { #[sql_traits(primary_key)] id: i64, name: String }",
         );
         assert!(out.contains("compile_error"), "{out}");
         assert!(out.contains("unrecognized directive"), "{out}");
@@ -1358,12 +1158,13 @@ mod tests {
     #[test]
     fn a_misplaced_directive_is_a_compile_error_naming_where_it_belongs() {
         let on_a_field = expand_rec(
-            "struct Widget { #[macros(primary_key)] id: i64, #[macros(body_derive(Debug))] name: String }",
+            "struct Widget { #[sql_traits(primary_key)] id: i64, #[sql_traits(body_derive(Debug))] name: String }",
         );
         assert!(on_a_field.contains("belongs on the"), "{on_a_field}");
 
-        let on_the_struct =
-            expand_rec("#[macros(primary_key)] struct Widget { #[macros(primary_key)] id: i64 }");
+        let on_the_struct = expand_rec(
+            "#[sql_traits(primary_key)] struct Widget { #[sql_traits(primary_key)] id: i64 }",
+        );
         assert!(
             on_the_struct.contains("marks a field, not the struct"),
             "{on_the_struct}"
@@ -1372,10 +1173,11 @@ mod tests {
 
     #[test]
     fn primary_key_derive_rejects_a_container_directive_it_cannot_act_on() {
-        let out =
-            expand("#[macros(body_derive(Debug))] struct User { #[macros(primary_key)] id: i64 }");
+        let out = expand(
+            "#[sql_traits(body_derive(Debug))] struct User { #[sql_traits(primary_key)] id: i64 }",
+        );
         assert!(out.contains("compile_error"), "{out}");
-        assert!(out.contains("derive(macros::Record)"), "{out}");
+        assert!(out.contains("derive(sql_traits::Record)"), "{out}");
     }
 
     fn expand_upd(src: &str) -> String {
@@ -1385,7 +1187,7 @@ mod tests {
     #[test]
     fn update_emits_a_fields_struct_without_the_key_fields() {
         let out = expand_upd(
-            "pub struct Widget { #[macros(primary_key)] pub id: i64, pub name: String }",
+            "pub struct Widget { #[sql_traits(primary_key)] pub id: i64, pub name: String }",
         );
         assert!(out.contains("pub struct WidgetUpdate"), "{out}");
         assert!(
@@ -1396,7 +1198,7 @@ mod tests {
 
     #[test]
     fn update_wraps_a_non_nullable_field_in_one_option() {
-        let out = expand_upd("struct Widget { #[macros(primary_key)] id: i64, name: String }");
+        let out = expand_upd("struct Widget { #[sql_traits(primary_key)] id: i64, name: String }");
         assert!(
             out.contains("name : :: core :: option :: Option < String >"),
             "{out}"
@@ -1405,7 +1207,8 @@ mod tests {
 
     #[test]
     fn update_wraps_a_nullable_field_in_two_options() {
-        let out = expand_upd("struct Widget { #[macros(primary_key)] id: i64, qty: Option<i32> }");
+        let out =
+            expand_upd("struct Widget { #[sql_traits(primary_key)] id: i64, qty: Option<i32> }");
         assert!(
             out.contains("qty : :: core :: option :: Option < Option < i32 > >"),
             "{out}"
@@ -1416,7 +1219,8 @@ mod tests {
     // produces, silently turning "clear this column" into "leave it alone".
     #[test]
     fn a_nullable_field_gets_the_double_option_helper_and_a_default() {
-        let out = expand_upd("struct Widget { #[macros(primary_key)] id: i64, qty: Option<i32> }");
+        let out =
+            expand_upd("struct Widget { #[sql_traits(primary_key)] id: i64, qty: Option<i32> }");
         assert!(
             out.contains(r#"deserialize_with = "::sql_traits::double_option""#),
             "{out}"
@@ -1428,21 +1232,21 @@ mod tests {
     // noise — and `deserialize_with` on it would be a type error.
     #[test]
     fn a_non_nullable_field_gets_no_serde_attribute() {
-        let out = expand_upd("struct Widget { #[macros(primary_key)] id: i64, name: String }");
+        let out = expand_upd("struct Widget { #[sql_traits(primary_key)] id: i64, name: String }");
         assert!(!out.contains("double_option"), "{out}");
     }
 
     #[test]
     fn a_fully_qualified_option_is_still_recognized_as_nullable() {
         let out = expand_upd(
-            "struct Widget { #[macros(primary_key)] id: i64, qty: ::core::option::Option<i32> }",
+            "struct Widget { #[sql_traits(primary_key)] id: i64, qty: ::core::option::Option<i32> }",
         );
         assert!(out.contains("double_option"), "{out}");
     }
 
     #[test]
     fn update_emits_both_association_impls() {
-        let out = expand_upd("struct Widget { #[macros(primary_key)] id: i64, name: String }");
+        let out = expand_upd("struct Widget { #[sql_traits(primary_key)] id: i64, name: String }");
         assert!(
             out.contains(":: sql_traits :: HasUpdateFields for Widget"),
             "{out}"
@@ -1457,7 +1261,7 @@ mod tests {
 
     #[test]
     fn apply_writes_a_set_field_and_leaves_an_absent_one() {
-        let out = expand_upd("struct Widget { #[macros(primary_key)] id: i64, name: String }");
+        let out = expand_upd("struct Widget { #[sql_traits(primary_key)] id: i64, name: String }");
         assert!(
             out.contains("if let :: core :: option :: Option :: Some (value) = fields . name"),
             "{out}"
@@ -1468,7 +1272,7 @@ mod tests {
     #[test]
     fn is_empty_checks_every_field() {
         let out = expand_upd(
-            "struct Widget { #[macros(primary_key)] id: i64, name: String, qty: Option<i32> }",
+            "struct Widget { #[sql_traits(primary_key)] id: i64, name: String, qty: Option<i32> }",
         );
         assert!(
             out.contains("self . name . is_none () && self . qty . is_none ()"),
@@ -1480,7 +1284,7 @@ mod tests {
     // empty. An `is_empty` built by joining zero clauses with `&&` would not compile.
     #[test]
     fn is_empty_is_true_when_there_are_no_non_key_fields() {
-        let out = expand_upd("struct Widget { #[macros(primary_key)] id: i64 }");
+        let out = expand_upd("struct Widget { #[sql_traits(primary_key)] id: i64 }");
         assert!(
             out.contains("fn is_empty (& self) -> bool { true }"),
             "{out}"
@@ -1490,19 +1294,19 @@ mod tests {
     #[test]
     fn update_applies_the_requested_derives() {
         let out = expand_upd(
-            "#[macros(update_derive(Debug, PartialEq))] struct Widget { #[macros(primary_key)] id: i64, name: String }",
+            "#[sql_traits(update_derive(Debug, PartialEq))] struct Widget { #[sql_traits(primary_key)] id: i64, name: String }",
         );
         assert!(out.contains("# [derive (Debug , PartialEq)]"), "{out}");
     }
 
     #[test]
-    fn update_forwards_non_macros_attributes() {
+    fn update_forwards_non_sql_traits_attributes() {
         let out = expand_upd(
-            "#[serde(rename_all = \"camelCase\")] struct Widget { #[macros(primary_key)] id: i64, #[serde(rename = \"n\")] name: String }",
+            "#[serde(rename_all = \"camelCase\")] struct Widget { #[sql_traits(primary_key)] id: i64, #[serde(rename = \"n\")] name: String }",
         );
         assert!(out.contains("rename_all"), "{out}");
         assert!(out.contains("rename = \"n\""), "{out}");
-        assert!(!out.contains("macros"), "{out}");
+        assert!(!out.contains("# [sql_traits"), "{out}");
     }
 
     // The point of routing container directives by reader: a struct can carry both lists,
@@ -1510,8 +1314,8 @@ mod tests {
     // derive ran into the list it did not own rejected the whole struct.
     #[test]
     fn record_and_update_read_their_own_derive_list_and_tolerate_the_other() {
-        let src = "#[macros(body_derive(Debug))] #[macros(update_derive(PartialEq))] \
-                   struct Widget { #[macros(primary_key)] id: i64, name: String }";
+        let src = "#[sql_traits(body_derive(Debug))] #[sql_traits(update_derive(PartialEq))] \
+                   struct Widget { #[sql_traits(primary_key)] id: i64, name: String }";
 
         let record = expand_rec(src);
         assert!(!record.contains("compile_error"), "{record}");
@@ -1536,18 +1340,19 @@ mod tests {
     #[test]
     fn primary_key_tolerates_an_update_list_but_not_a_body_list() {
         let tolerated = expand(
-            "#[macros(update_derive(Debug))] struct User { #[macros(primary_key)] id: i64 }",
+            "#[sql_traits(update_derive(Debug))] struct User { #[sql_traits(primary_key)] id: i64 }",
         );
         assert!(!tolerated.contains("compile_error"), "{tolerated}");
 
-        let rejected =
-            expand("#[macros(body_derive(Debug))] struct User { #[macros(primary_key)] id: i64 }");
+        let rejected = expand(
+            "#[sql_traits(body_derive(Debug))] struct User { #[sql_traits(primary_key)] id: i64 }",
+        );
         assert!(rejected.contains("compile_error"), "{rejected}");
     }
 
     #[test]
     fn update_rejects_tuple_structs() {
-        let out = expand_upd("struct Widget(#[macros(primary_key)] i64, String);");
+        let out = expand_upd("struct Widget(#[sql_traits(primary_key)] i64, String);");
         assert!(out.contains("compile_error"), "{out}");
         assert!(out.contains("named fields"), "{out}");
     }
@@ -1565,7 +1370,7 @@ mod tests {
     #[test]
     fn record_destructures_a_composite_key_by_name_when_rebuilding() {
         let out = expand_rec(
-            "struct Membership { #[macros(primary_key)] user_id: i64, #[macros(primary_key)] group_id: u32, role: String }",
+            "struct Membership { #[sql_traits(primary_key)] user_id: i64, #[sql_traits(primary_key)] group_id: u32, role: String }",
         );
         assert!(
             out.contains("struct MembershipPrimaryKey { user_id : i64 , group_id : u32 }"),
@@ -1589,7 +1394,7 @@ mod tests {
     #[test]
     fn a_key_field_named_body_does_not_shadow_the_request_body() {
         let out = expand_rec(
-            "struct Doc { #[macros(primary_key)] body: String, #[macros(primary_key)] rev: i64, title: String }",
+            "struct Doc { #[sql_traits(primary_key)] body: String, #[sql_traits(primary_key)] rev: i64, title: String }",
         );
         assert!(
             out.contains("let DocPrimaryKey { body : __pk0 , rev : __pk1 } = primary_key"),
@@ -1604,7 +1409,7 @@ mod tests {
 
     #[test]
     fn database_directive_names_the_sqlx_type_by_absolute_path() {
-        let out = expand_db("#[macros(database = Sqlite)] struct Widget { id: i64 }");
+        let out = expand_db("#[sql_traits(database = Sqlite)] struct Widget { id: i64 }");
         assert!(
             out.contains(":: sql_traits :: HasDatabase for Widget"),
             "{out}"
@@ -1619,7 +1424,7 @@ mod tests {
     fn each_supported_database_is_accepted() {
         for db in ["Postgres", "Sqlite", "MySql", "Any"] {
             let out = expand_db(&format!(
-                "#[macros(database = {db})] struct Widget {{ id: i64 }}"
+                "#[sql_traits(database = {db})] struct Widget {{ id: i64 }}"
             ));
             assert!(
                 out.contains(&format!("type Database = :: sql_traits :: sqlx :: {db}")),
@@ -1631,7 +1436,7 @@ mod tests {
     // A typo must say what to write instead, never silently pick a database.
     #[test]
     fn an_unknown_database_is_a_hard_error_naming_the_set() {
-        let out = expand_db("#[macros(database = Sqlite3)] struct Widget { id: i64 }");
+        let out = expand_db("#[sql_traits(database = Sqlite3)] struct Widget { id: i64 }");
         assert!(out.contains("compile_error"), "{out}");
         assert!(out.contains("Postgres") && out.contains("MySql"), "{out}");
     }
@@ -1650,8 +1455,8 @@ mod tests {
     #[test]
     fn database_is_tolerated_alongside_the_other_derive_lists() {
         let out = expand_db(
-            "#[macros(database = Postgres)] #[macros(body_derive(Deserialize))] \
-             #[macros(update_derive(Deserialize))] struct Widget { id: i64 }",
+            "#[sql_traits(database = Postgres)] #[sql_traits(body_derive(Deserialize))] \
+             #[sql_traits(update_derive(Deserialize))] struct Widget { id: i64 }",
         );
         assert!(!out.contains("compile_error"), "{out}");
         assert!(
@@ -1663,8 +1468,8 @@ mod tests {
     #[test]
     fn record_tolerates_the_database_directive() {
         let out = expand_rec(
-            "#[macros(database = Sqlite)] #[macros(body_derive(Deserialize))] \
-             struct Widget { #[macros(primary_key)] id: i64, name: String }",
+            "#[sql_traits(database = Sqlite)] #[sql_traits(body_derive(Deserialize))] \
+             struct Widget { #[sql_traits(primary_key)] id: i64, name: String }",
         );
         assert!(!out.contains("compile_error"), "{out}");
     }
@@ -1672,8 +1477,53 @@ mod tests {
     #[test]
     fn database_on_a_field_is_reported_as_misplaced() {
         let out = expand_rec(
-            "struct Widget { #[macros(primary_key)] id: i64, #[macros(database = Sqlite)] name: String }",
+            "struct Widget { #[sql_traits(primary_key)] id: i64, #[sql_traits(database = Sqlite)] name: String }",
         );
         assert!(out.contains("compile_error"), "{out}");
+    }
+
+    /// Asserts every mention of a `foreign` crate in `out` is reached through `parent`.
+    ///
+    /// `quote!` renders token streams space-separated, so a path segment appears as
+    /// `:: name ::`. A foreign crate is allowed only where the text immediately before it is
+    /// `:: <parent>` — that is, `:: sql_traits :: sqlx ::` passes and a bare
+    /// `:: sqlx ::` fails. This is what convention 2 asserts in prose.
+    fn assert_anchored(out: &str, parent: &str, foreign: &[&str]) {
+        let through = format!(":: {parent}");
+        for name in foreign {
+            let needle = format!(":: {name} ::");
+            let mut from = 0;
+            while let Some(offset) = out[from..].find(&needle) {
+                let at = from + offset;
+                assert!(
+                    out[..at].trim_end().ends_with(&through),
+                    "`{name}` is named without going through `{parent}`:\n{out}"
+                );
+                from = at + needle.len();
+            }
+        }
+    }
+
+    #[test]
+    fn every_emitted_path_anchors_at_sql_traits() {
+        const FOREIGN: &[&str] = &[
+            "serde",
+            "serde_json",
+            "sqlx",
+            "async_trait",
+            "axum_helpers",
+            "generic_helpers",
+        ];
+        let record = "#[sql_traits(database = Sqlite)] \
+                      struct Widget { #[sql_traits(primary_key)] id: i64, name: String, note: Option<String> }";
+        let outputs = [
+            expand_primary_key(record.parse().unwrap()).to_string(),
+            expand_record(record.parse().unwrap()).to_string(),
+            expand_update(record.parse().unwrap()).to_string(),
+            expand_database(record.parse().unwrap()).to_string(),
+        ];
+        for out in outputs {
+            assert_anchored(&out, "sql_traits", FOREIGN);
+        }
     }
 }

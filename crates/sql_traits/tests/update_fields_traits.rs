@@ -8,8 +8,8 @@
 
 use sql_traits::{HasPrimaryKey, HasUpdateFields, UpdateFields};
 
-#[derive(Debug, PartialEq, macros::Database)]
-#[macros(database = Sqlite)]
+#[derive(Debug, PartialEq, sql_traits::Database)]
+#[sql_traits(database = Sqlite)]
 struct User {
     id: i64,
     name: String,

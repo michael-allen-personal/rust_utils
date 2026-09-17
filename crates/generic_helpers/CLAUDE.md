@@ -1,15 +1,16 @@
 # generic_helpers
 
-Small shared helpers, one dependency (`error_set`). Two unrelated halves:
+Small shared helpers, two dependencies (`error_set`, and this crate's own
+`generic_helpers_macros`, re-exported from the crate root). Two unrelated halves:
 
 - **`str_enum!`** — declares a fieldless enum plus its whole string round-trip.
 - **File helpers** — `buf_reader_from_path` and `MaxVecCapacity`, for file-parsing
   CLIs.
 
-The name is generic; the admission rule is not. Stay at one dependency and keep
-additions applicable to more than one consumer — otherwise it belongs in the
-specific crate. Consumers pull this in for one small helper apiece, so anything
-heavy lands in their build for no benefit.
+The name is generic; the admission rule is not. Stay at one dependency beyond its own
+derive crate, and keep additions applicable to more than one consumer — otherwise it
+belongs in the specific crate. Consumers pull this in for one small helper apiece, so
+anything heavy lands in their build for no benefit.
 
 Workspace-wide conventions — re-exporting leaked-type dependencies, absolute paths in
 macro output, tests as separate consumer crates — are in the root `CLAUDE.md`. What
@@ -17,9 +18,13 @@ follows is what is specific to this crate.
 
 ## `MaxVecCapacity` and its derive
 
+This crate's one derive belongs here rather than in a shared macro crate — it is unrelated
+to the SQL and route derives, so it lives in its own private `generic_helpers_macros`,
+depended on and re-exported by this crate alone.
+
 The file helpers are re-exported at the crate root (`generic_helpers::MaxVecCapacity`),
-not under `files::`. Keep it that way: the `MaxVecCapacity` derive in `macros` emits
-`::generic_helpers::MaxVecCapacity`, so both the crate name and that root re-export are
+not under `files::`. Keep it that way: the `MaxVecCapacity` derive in `generic_helpers_macros`
+emits `::generic_helpers::MaxVecCapacity`, so both the crate name and that root re-export are
 load-bearing in every downstream expansion. Renaming either breaks each derive site with
 an error that points at the derive, not at the rename.
 
@@ -31,10 +36,21 @@ even compile it. Two things prevent a repeat, and both matter:
 1. **The emitted path is absolute** (`::generic_helpers::…`). A bare `generic_helpers::`
    resolves in the *caller's* module, so it would break for any consumer with a local
    item of that name — and work fine everywhere it was tested.
-2. **`tests/derive_macros.rs` is a consumer-perspective compile test.** It depends only
-   on this crate and `macros`, and never imports the trait. That is the only vantage
-   point from which a wrong path is visible; an in-crate test resolves everything
-   locally and proves nothing. Same pattern as `sql_traits/tests/derive_macros.rs`.
+2. **`tests/derive_macros.rs` is a consumer-perspective compile test.** It reaches the
+   derive only through this crate's own re-export — it declares no macro crate and has no
+   `[dev-dependencies]` of any kind — and never imports the trait. That is the only vantage
+   point from which a wrong path is visible; an in-crate test resolves everything locally
+   and proves nothing. Same pattern as `sql_traits/tests/derive_macros.rs`.
+
+**The anchor test alone would not have caught either failure mode above.**
+`generic_helpers_macros` carries `every_emitted_path_anchors_at_generic_helpers`, but its
+one derive hands the trait path in as an argument from `#[proc_macro_derive]` straight to a
+shared `expand_marker`, and that is exactly the argument the test itself also supplies — so
+a wrong path there passes the anchor test and is caught only by `tests/derive_macros.rs`
+above, from outside the crate. `generic_helpers_macros`' own tests are otherwise unit tests
+in its `src/lib.rs`, the workspace's exception to keeping tests under `tests/`: they assert
+on the token string the private `expand_marker` function returns, which is only reachable
+in-crate.
 
 ## `str_enum!`
 

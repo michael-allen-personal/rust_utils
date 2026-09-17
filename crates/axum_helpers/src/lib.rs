@@ -16,3 +16,8 @@ pub use serde;
 pub use serde_json;
 pub use sql_traits;
 pub use sqlx;
+
+pub use axum_helpers_macros::{
+    BasicCrudRoutes, BulkCreateRoute, CreateRoute, DeleteRoute, GetLatestRoute, GetRecordRoute,
+    ListRecordsRoute, ReplaceRoute, UpdateRoute,
+};

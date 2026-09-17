@@ -16,10 +16,10 @@ use sql_traits::{
     OffsetPagination, OffsetParams, Page, ReplaceRecord, UpdateRecord,
 };
 
-#[derive(macros::Database, macros::Update)]
-#[macros(database = Sqlite)]
+#[derive(sql_traits::Database, sql_traits::Update)]
+#[sql_traits(database = Sqlite)]
 struct Widget {
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     id: i64,
     name: String,
 }
@@ -115,7 +115,7 @@ impl ReplaceRecord for Widget {
     }
 }
 
-/// `WidgetUpdate` is `macros::Update`'s output on `Widget` above — the pairing that would
+/// `WidgetUpdate` is `sql_traits::Update`'s output on `Widget` above — the pairing that would
 /// otherwise take a hand-written `HasUpdateFields`/`UpdateFields` impl to get here.
 #[async_trait]
 impl UpdateRecord for Widget {

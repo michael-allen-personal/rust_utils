@@ -363,8 +363,8 @@ where
 /// OpenAPI schema therefore describes the body without the key, without needing to be
 /// told to hide it.
 ///
-/// That tolerance is serde's default, not a promise this trait makes. `macros::Record`
-/// forwards every non-`macros` container attribute to the generated body, so a record
+/// That tolerance is serde's default, not a promise this trait makes. [`sql_traits::Record`]
+/// forwards every non-`sql_traits` container attribute to the generated body, so a record
 /// carrying `#[serde(deny_unknown_fields)]` yields a body that carries it too, and a
 /// payload with the key in it is then rejected with `422 Unprocessable Entity`. That is
 /// deliberate: an explicit opt-in to strictness is honoured rather than quietly
@@ -416,7 +416,7 @@ where
 /// # Clearing a nullable column
 ///
 /// A field that is absent from the body is left alone; a nullable field explicitly set to
-/// `null` is cleared. Keeping those apart is the whole reason `macros::Update` emits
+/// `null` is cleared. Keeping those apart is the whole reason [`sql_traits::Update`] emits
 /// `sql_traits::double_option` on nullable fields — a hand-written update type that omits
 /// it will silently treat `null` as "leave alone".
 ///

@@ -1,6 +1,6 @@
 //! `Review` — the composite primary key.
 //!
-//! Two fields marked `#[macros(primary_key)]` generate `ReviewPrimaryKey { book_id,
+//! Two fields marked `#[sql_traits(primary_key)]` generate `ReviewPrimaryKey { book_id,
 //! reviewer }` — a **named struct, not a tuple**, so `axum::extract::Path` binds each URL
 //! segment by name. A tuple would bind by position, which compiles, mounts, runs, and
 //! addresses the wrong row whenever a route declares its segments in a different order from
@@ -11,7 +11,7 @@
 //! declared order does not matter, extra segments are ignored, and a key field no segment
 //! names is a `400` from the extractor before the handler runs.
 //!
-//! `macros::PrimaryKey` is deliberately **not** derived here: `Record` is a superset of it,
+//! `sql_traits::PrimaryKey` is deliberately **not** derived here: `Record` is a superset of it,
 //! and deriving both would emit `impl HasPrimaryKey` and `ReviewPrimaryKey` twice.
 //!
 //! `/books/{book_id}/reviews/page` is mounted before `/books/{book_id}/reviews/{reviewer}`
@@ -48,23 +48,23 @@ fn review_from_row((book_id, reviewer, rating, comment): ReviewRow) -> Review {
 #[derive(
     serde::Serialize,
     serde::Deserialize,
-    macros::Database,
-    macros::Record,
-    macros::Update,
-    macros::GetRecordRoute,
-    macros::ReplaceRoute,
-    macros::UpdateRoute,
-    macros::DeleteRoute,
-    macros::CreateRoute,
+    sql_traits::Database,
+    sql_traits::Record,
+    sql_traits::Update,
+    axum_helpers::GetRecordRoute,
+    axum_helpers::ReplaceRoute,
+    axum_helpers::UpdateRoute,
+    axum_helpers::DeleteRoute,
+    axum_helpers::CreateRoute,
 )]
-#[macros(database = Sqlite)]
-#[macros(body_derive(serde::Serialize, serde::Deserialize))]
-#[macros(update_derive(serde::Deserialize))]
+#[sql_traits(database = Sqlite)]
+#[sql_traits(body_derive(serde::Serialize, serde::Deserialize))]
+#[sql_traits(update_derive(serde::Deserialize))]
 #[serde(crate = "axum_helpers::serde")]
 pub struct Review {
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     pub book_id: i64,
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     pub reviewer: String,
     pub rating: i64,
     pub comment: Option<String>,

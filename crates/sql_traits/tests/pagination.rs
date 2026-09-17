@@ -10,9 +10,9 @@
 
 use sql_traits::{CursorPagination, OffsetPagination, Page};
 
-#[derive(sql_traits::serde::Serialize, macros::Database)]
+#[derive(sql_traits::serde::Serialize, sql_traits::Database)]
 #[serde(crate = "sql_traits::serde")]
-#[macros(database = Sqlite)]
+#[sql_traits(database = Sqlite)]
 struct Widget {
     id: i64,
 }
@@ -208,8 +208,8 @@ where
 // filled if and only if it was asked for. These tests run real queries against a real
 // in-memory SQLite database.
 
-#[derive(macros::Database)]
-#[macros(database = Sqlite)]
+#[derive(sql_traits::Database)]
+#[sql_traits(database = Sqlite)]
 struct Entry {
     id: i64,
 }

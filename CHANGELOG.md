@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Changed
+
+- **Breaking.** The `macros` crate is gone. Its fourteen derives now ship from the crates
+  whose traits they implement: `sql_traits::{PrimaryKey, Record, Update, Database}`,
+  `axum_helpers::{CreateRoute, BulkCreateRoute, GetRecordRoute, GetLatestRoute,
+  ListRecordsRoute, ReplaceRoute, UpdateRoute, DeleteRoute, BasicCrudRoutes}`, and
+  `generic_helpers::MaxVecCapacity` — the arrangement `serde` and `sqlx` use, where a crate
+  hands out its own derives and the proc-macro crate behind them is private plumbing
+  (`sql_traits_macros`, `axum_helpers_macros`, `generic_helpers_macros`, none of which a
+  consumer names). No generated path changed; the derives only moved.
+
+  The reason is that a standalone public macro crate forced consumers to declare a crate
+  their source never named. Generated code anchors at absolute paths — `::sql_traits::HasPrimaryKey`
+  — and an absolute path resolves only where the *use site* declares that crate, so deriving
+  `macros::Record` required a `sql_traits` line in `Cargo.toml` that nothing in the consumer's
+  own source explained, with a missing one erroring at the derive rather than at the manifest.
+  Writing `sql_traits::Record` makes the manifest entry self-evident: the spelling cannot be
+  written without the dependency it needs. Each macro crate now also carries an
+  `every_emitted_path_anchors_at_*` test, so the rule that used to live in prose is checked
+  by the build.
+
+  The helper attribute is renamed to match its new home in the same release, rather than
+  breaking twice: `#[macros(primary_key)]` becomes `#[sql_traits(primary_key)]`, and likewise
+  for `body_derive`, `update_derive` and `database`. The directive names are unchanged.
+
+  To migrate: delete `macros` from `Cargo.toml`; make sure `sql_traits` is declared (most
+  consumers already declare it, for the extern-prelude reason this change removes); rewrite
+  `macros::{PrimaryKey,Record,Update,Database}` to `sql_traits::…`, `macros::{*Route,BasicCrudRoutes}`
+  to `axum_helpers::…`, and `macros::MaxVecCapacity` to `generic_helpers::MaxVecCapacity`;
+  then `#[macros(` to `#[sql_traits(`. No driver feature is needed on the `sql_traits` line —
+  cargo unifies the one already set on `axum_helpers` onto the same compiled copy
+
 ### Added
 
 - `generic_helpers` crate, moved here from the `data-monorepo` repo (where it was

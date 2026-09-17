@@ -1,11 +1,12 @@
 //! Consumer-perspective test for the `PrimaryKey` and `Update` derives.
 //!
-//! This is a separate crate, and it names neither `serde` nor `sql_traits`' own
-//! dependencies: `serde` is reached through `sql_traits`' re-export. That the file compiles
-//! is half the assertion — the derives' generated `::sql_traits::HasPrimaryKey` and
-//! `::sql_traits::double_option` paths have to resolve from outside the crate. The `Update`
-//! section adds runtime assertions, because a generated `deserialize_with` that resolves but
-//! is not actually attached would still compile and would still lose an explicit `null`.
+//! This is a separate crate, and it names none of `sql_traits`' own dependencies: `serde`
+//! is reached through `sql_traits`' re-export, and so are the derives themselves. That the
+//! file compiles is half the assertion — the derives' generated `::sql_traits::HasPrimaryKey`
+//! and `::sql_traits::double_option` paths have to resolve from outside the crate. The
+//! `Update` section adds runtime assertions, because a generated `deserialize_with` that
+//! resolves but is not actually attached would still compile and would still lose an
+//! explicit `null`.
 
 // The struct fields exist only to drive the derive; they are never read directly.
 #![allow(dead_code)]
@@ -13,28 +14,28 @@
 use sql_traits::UpdateFields as _;
 
 // Single primary key -> `PrimaryKey` is the field's type.
-#[derive(macros::PrimaryKey, macros::Database)]
-#[macros(database = Sqlite)]
+#[derive(sql_traits::PrimaryKey, sql_traits::Database)]
+#[sql_traits(database = Sqlite)]
 struct User {
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     id: i64,
     name: String,
 }
 
 // Composite primary key -> `PrimaryKey` is a generated `MembershipPrimaryKey` struct,
 // one field per marked field. A struct rather than a tuple so a URL path binds it by name.
-#[derive(macros::PrimaryKey)]
+#[derive(sql_traits::PrimaryKey)]
 struct Membership {
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     user_id: i64,
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     group_id: i64,
 }
 
 // A non-`Copy` primary key -> the generated accessor has to clone, not move out of `&self`.
-#[derive(macros::PrimaryKey)]
+#[derive(sql_traits::PrimaryKey)]
 struct ApiKey {
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     token: String,
     label: String,
 }
@@ -107,10 +108,10 @@ fn primary_key_clones_a_non_copy_key_and_leaves_the_record_usable() {
 }
 
 // `Record` derive: the body type is the record minus its key fields.
-#[derive(Debug, Clone, PartialEq, macros::Record)]
-#[macros(body_derive(Debug, PartialEq))]
+#[derive(Debug, Clone, PartialEq, sql_traits::Record)]
+#[sql_traits(body_derive(Debug, PartialEq))]
 struct Product {
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     sku: i64,
     title: String,
     tags: Vec<String>,
@@ -146,12 +147,12 @@ fn record_derive_also_implements_has_primary_key() {
 
 // Composite key, to prove the body strips every marked field and the key struct is rebuilt
 // field for field.
-#[derive(Debug, Clone, PartialEq, macros::Record)]
-#[macros(body_derive(Debug, PartialEq))]
+#[derive(Debug, Clone, PartialEq, sql_traits::Record)]
+#[sql_traits(body_derive(Debug, PartialEq))]
 struct Enrollment {
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     student_id: i64,
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     course_id: i64,
     grade: String,
 }
@@ -183,10 +184,10 @@ fn record_round_trips_through_key_and_body() {
 
 // A non-`Copy` key, to prove the generated accessor and assembly clone rather than
 // trying to move out of `&self`.
-#[derive(Debug, Clone, PartialEq, macros::Record)]
-#[macros(body_derive(Debug, PartialEq))]
+#[derive(Debug, Clone, PartialEq, sql_traits::Record)]
+#[sql_traits(body_derive(Debug, PartialEq))]
 struct Session {
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     token: String,
     user_id: i64,
 }
@@ -279,7 +280,7 @@ fn a_composite_key_ignores_a_value_it_has_no_field_for() {
     assert_eq!(key.group_id, 9);
 }
 
-// --- `macros::Update` ---------------------------------------------------------------
+// --- `sql_traits::Update` ---------------------------------------------------------------
 //
 // The end-to-end assertion for a partial update: the derive's generated
 // `::sql_traits::double_option` path has to resolve from a crate that never names it, and
@@ -289,11 +290,13 @@ fn a_composite_key_ignores_a_value_it_has_no_field_for() {
 // `HasUpdateFields`, so the type needs `PrimaryKey` (or `Record`) alongside it. Deriving
 // `Update` on its own fails at the generated impl with an unsatisfied `HasPrimaryKey`
 // bound, which is the intended pairing made visible rather than a silent gap.
-#[derive(Debug, PartialEq, sql_traits::serde::Serialize, macros::PrimaryKey, macros::Update)]
-#[macros(update_derive(sql_traits::serde::Deserialize))]
+#[derive(
+    Debug, PartialEq, sql_traits::serde::Serialize, sql_traits::PrimaryKey, sql_traits::Update,
+)]
+#[sql_traits(update_derive(sql_traits::serde::Deserialize))]
 #[serde(crate = "sql_traits::serde")]
 struct Widget {
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     id: i64,
     name: String,
     /// Nullable, so the generated field is doubly wrapped and carries the helper.

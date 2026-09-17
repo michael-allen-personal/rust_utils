@@ -1,22 +1,20 @@
 //! Consumer-perspective compile test for the `MaxVecCapacity` derive.
 //!
-//! This is a separate crate that depends only on `generic_helpers` and `macros`. The
-//! whole point is that it compiles: the derive's generated
-//! `::generic_helpers::MaxVecCapacity` path resolves without the use site naming the
-//! trait at all. The derive previously shipped emitting a path to a crate that lived in
-//! another repo, which no consumer could resolve — nothing in this workspace noticed,
-//! because the only thing that catches it is a use site outside the crate itself.
+//! This is a separate crate whose only dependency is `generic_helpers`. The derive is
+//! reached through that crate's re-export, and the generated
+//! `::generic_helpers::MaxVecCapacity` path has to resolve from outside the crate, so the
+//! fact that this file builds is the assertion.
 
 // The struct fields exist only to give the types a size; they are never read directly.
 #![allow(dead_code)]
 
-#[derive(macros::MaxVecCapacity)]
+#[derive(generic_helpers::MaxVecCapacity)]
 struct QuantityRecord {
     value: f64,
     unit: u32,
 }
 
-#[derive(macros::MaxVecCapacity)]
+#[derive(generic_helpers::MaxVecCapacity)]
 struct Workout {
     duration: f64,
     energy_burned: f64,

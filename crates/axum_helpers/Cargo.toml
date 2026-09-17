@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 async-trait = { workspace = true }
 axum = { workspace = true }
+axum_helpers_macros = { workspace = true }
 chrono = { workspace = true }
 error_set = { workspace = true }
 serde = { workspace = true }
@@ -22,12 +23,6 @@ mysql = ["sql_traits/mysql", "sqlx/mysql"]
 any = ["sql_traits/any", "sqlx/any"]
 
 [dev-dependencies]
-# Consumer-perspective compile tests for the route derive macros. Nothing here declares
-# `serde` or `sql_traits`: the test crates reach them only through `axum_helpers`'
-# re-exports, which is what proves the derive output is self-contained. That discipline
-# lives in the test files themselves rather than in Cargo — a package's `[dependencies]`
-# are in scope for its own test targets — so keep new tests using the re-export paths.
-macros = { path = "../macros" }
 # Only `tests/route_responses.rs` needs a runtime, to await a handler and read the status
 # code it answers with. The other test crates are compile-and-mount assertions.
 tokio = { workspace = true }

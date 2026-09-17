@@ -116,15 +116,24 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "axum_helpers_macros",
  "chrono",
  "error_set",
- "macros",
  "serde",
  "serde_json",
  "sql_traits",
  "sqlx",
  "tokio",
  "tower",
+]
+
+[[package]]
+name = "axum_helpers_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -529,7 +538,16 @@ name = "generic_helpers"
 version = "0.1.0"
 dependencies = [
  "error_set",
- "macros",
+ "generic_helpers_macros",
+]
+
+[[package]]
+name = "generic_helpers_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -875,15 +893,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
-name = "macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1096,7 +1105,6 @@ version = "0.1.0"
 dependencies = [
  "axum_helpers",
  "generic_helpers",
- "macros",
  "sql_traits",
  "sqlx",
  "tokio",
@@ -1252,11 +1260,20 @@ name = "sql_traits"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "macros",
  "serde",
  "serde_json",
+ "sql_traits_macros",
  "sqlx",
  "tokio",
+]
+
+[[package]]
+name = "sql_traits_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
