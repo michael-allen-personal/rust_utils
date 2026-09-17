@@ -18,8 +18,8 @@ defeats the point.
 
 ## Every leaked type comes from `axum_helpers`, and `sqlx` is in the manifest for a feature flag, not for its API
 
-`Cargo.toml` depends on `axum_helpers`, `generic_helpers`, `macros`, `sql_traits` and
-`sqlx` — but no source file writes `use sqlx::...` or names an `axum` or `serde` type that
+`Cargo.toml` depends on `axum_helpers`, `generic_helpers`, `sql_traits` and `sqlx` — but no
+source file writes `use sqlx::...` or names an `axum` or `serde` type that
 didn't come through `axum_helpers::{axum, serde, sqlx, sql_traits, async_trait}`. `sqlx` is
 declared for one reason: `features = ["runtime-tokio"]` selects the async runtime the
 binary needs for `#[tokio::main]` and `TcpListener`, a choice `axum_helpers` has no opinion
@@ -28,58 +28,45 @@ through `axum_helpers`' forwarded feature, not through this `sqlx` dependency. I
 crate ever needed to name a `sqlx` type directly to get something built, that would be a
 finding about the library's re-export surface, not a reason to add the import.
 
-## The `sql_traits` finding
+## The manifest names `sql_traits` directly, and the derive spellings say why
 
-This is the most useful thing this sample turned up, and it is a fact about the macros,
-not about the sample.
+`sql_traits::Record`, `sql_traits::Update` and `sql_traits::Database` (see `authors.rs`,
+`books.rs`, `reviews.rs`) are spelled with `sql_traits` as the crate name, not reached
+through `axum_helpers`' re-export — that is convention 1's one deliberate exception. These
+derives emit *bare* `::sql_traits::…` paths (`::sql_traits::HasPrimaryKey`,
+`::sql_traits::HasRequestBody`, and so on), which resolve only where the deriving crate has
+`sql_traits` in its own extern prelude. Going through `axum_helpers`'s re-export is not an
+option for them: they have nothing to do with axum and are used by non-HTTP consumers of
+`sql_traits` alone, so the path they emit cannot be conditional on `axum_helpers` being
+present. Writing `sql_traits::Record` is what makes the `Cargo.toml` entry self-evident —
+the derive's own spelling cannot be written without the dependency it needs.
 
-`macros::Record`, `macros::Update`, `macros::Database` and `macros::PrimaryKey` emit *bare*
-`::sql_traits::…` paths — `::sql_traits::HasPrimaryKey` at
-`crates/macros/src/lib.rs:311`, `::sql_traits::HasRequestBody` at line 579,
-`::sql_traits::HasUpdateFields` at line 722, `::sql_traits::HasDatabase` at line 749, among
-others. A bare `::sql_traits::` resolves only where `sql_traits` is a name in the deriving
-crate's own extern prelude — that is, only where the crate that writes `#[derive(macros::Record)]`
-also lists `sql_traits` in its own `[dependencies]`. Going through `axum_helpers`'
-re-export is not an option for these four: they have nothing to do with axum and are used
-by non-HTTP consumers of `sql_traits` alone, so the path they emit cannot be conditional on
-`axum_helpers` being present. The one generator that *can* assume axum is in the room,
-`insert_route_impl` (`crates/macros/src/lib.rs:188`, behind `macros::CreateRoute` and
-`macros::BulkCreateRoute`), does exactly that — it emits `::axum_helpers::sql_traits::#sql_trait`
-instead, because an insert route is axum-specific by construction.
+This crate is where that requirement first surfaced, before the derives were renamed to
+match. When `Record`/`Update`/`Database` were still spelled from the old public `macros`
+crate, this manifest carried `sql_traits` purely for the extern prelude, with no source
+file explaining why; the crate would not build — `E0433: failed to resolve: use of
+undeclared crate or module 'sql_traits'` — until `sql_traits = { workspace = true }` was
+added despite nothing importing from it directly. Renaming the derives closed that gap rather than merely
+documenting it: what this crate proves today is that the manifest and the derive spellings
+now agree, and that the re-export surface is otherwise sufficient to write a real
+application.
 
-Emitting `::axum_helpers::sql_traits::…` from the other four generators as well was
-considered and rejected. It would let a deriving crate skip declaring `sql_traits`
-directly, but only by making every non-HTTP consumer of `Record`/`Update`/`Database`/
-`PrimaryKey` — the ones the root `CLAUDE.md` says must be able to use the database traits
-without axum — depend on `axum_helpers` just to resolve a path. That is precisely the
-layering the workspace keeps one-way, so the fix is what this crate's `Cargo.toml` actually
-does: declare `sql_traits` as a direct dependency, purely for the extern prelude, with no
-source file importing anything from it.
-
-This had never been visible from *inside* the workspace before this crate existed. Every
-prior consumer of these derives lives under `sql_traits/tests/` or `axum_helpers/tests/`,
-and a package's own `[dependencies]` are automatically in scope for its `tests/` targets —
-so `sql_traits/tests/derive_macros.rs` gets `sql_traits` in its prelude for free, by
-accident of where it lives, never by needing to state it. `sample_api` is the first use
-site that derives `Record`/`Update`/`Database` without that accident, and it did not build
-— `E0433: failed to resolve: use of undeclared crate or module 'sql_traits'` — until
-`sql_traits = { workspace = true }` was added to its manifest.
-
-**The practical consequence for any downstream repo:** using `macros::Record`,
-`macros::Update`, `macros::Database` or `macros::PrimaryKey` requires declaring `sql_traits`
-directly, alongside `axum_helpers`, even if nothing in the crate ever writes `sql_traits::`
-by hand. Reaching only `axum_helpers` and expecting the derives to work is the exact
-mistake this sample caught.
+**This is the only vantage point that checks the manifest-level requirement.** A package's
+own `[dependencies]` are automatically in scope for its own `tests/` targets, so
+`sql_traits/tests/derive_macros.rs` gets `sql_traits` in its extern prelude for free, by
+accident of living inside the `sql_traits` package itself, never by needing to declare it.
+Only a genuinely separate package — this one — chooses its own manifest, so only here does
+deriving `sql_traits::Record` actually exercise whether the dependency has to be stated.
 
 ## What each module demonstrates
 
 - `db.rs` — the schema, the seed data, and the single `connect_and_seed` every route shares
   through axum's `State`.
-- `authors.rs` — the batteries-included path. One `#[derive(macros::BasicCrudRoutes)]`
+- `authors.rs` — the batteries-included path. One `#[derive(axum_helpers::BasicCrudRoutes)]`
   implements seven route traits at once; `GetLatestRoute` is derived separately because the
   bundle deliberately excludes it.
 - `books.rs` — the a-la-carte path, plus pagination and the `*Where` family.
-- `reviews.rs` — the composite-key path: two fields marked `#[macros(primary_key)]`
+- `reviews.rs` — the composite-key path: two fields marked `#[sql_traits(primary_key)]`
   generate a named `ReviewPrimaryKey` struct, not a tuple.
 
 **`authors.rs` and `books.rs` are a deliberate pair, not two ways of doing the same

@@ -39,8 +39,10 @@ use axum_helpers::{
 /// The primary key the fixtures treat as matching no row.
 const MISSING_ID: i64 = 404;
 
-#[derive(axum_helpers::serde::Serialize, axum_helpers::serde::Deserialize, macros::Database)]
-#[macros(database = Postgres)]
+#[derive(
+    axum_helpers::serde::Serialize, axum_helpers::serde::Deserialize, sql_traits::Database,
+)]
+#[sql_traits(database = Postgres)]
 #[serde(crate = "axum_helpers::serde")]
 struct Gadget {
     id: i64,
@@ -430,8 +432,8 @@ fn every_route_handler_mounts_on_a_router() {
 
 use axum_helpers::sqlx::{Pool, Sqlite};
 
-#[derive(axum_helpers::serde::Serialize, macros::Database)]
-#[macros(database = Sqlite)]
+#[derive(axum_helpers::serde::Serialize, sql_traits::Database)]
+#[sql_traits(database = Sqlite)]
 #[serde(crate = "axum_helpers::serde")]
 struct Sprocket {
     id: i64,

@@ -21,8 +21,8 @@ use axum_helpers::{GetRecordRoute, ReplaceRoute, UpdateRoute, serde};
 /// The primary key the fixture treats as matching no row.
 const MISSING_ID: i64 = 404;
 
-#[derive(serde::Serialize, macros::Database)]
-#[macros(database = Sqlite)]
+#[derive(serde::Serialize, sql_traits::Database)]
+#[sql_traits(database = Sqlite)]
 #[serde(crate = "axum_helpers::serde")]
 struct Widget {
     id: i64,
@@ -272,14 +272,16 @@ async fn an_empty_patch_is_rejected_before_the_key_is_looked_up() {
 
 /// Marked fields in the order `user_id`, `group_id`; every route below deliberately declares
 /// its segments in the opposite order. Under the old tuple key that swapped the two silently.
-#[derive(serde::Serialize, macros::Record, macros::GetRecordRoute, macros::Database)]
-#[macros(body_derive(axum_helpers::serde::Deserialize))]
-#[macros(database = Sqlite)]
+#[derive(
+    serde::Serialize, sql_traits::Record, axum_helpers::GetRecordRoute, sql_traits::Database,
+)]
+#[sql_traits(body_derive(axum_helpers::serde::Deserialize))]
+#[sql_traits(database = Sqlite)]
 #[serde(crate = "axum_helpers::serde")]
 struct Membership {
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     user_id: i64,
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     group_id: i64,
     role: String,
 }

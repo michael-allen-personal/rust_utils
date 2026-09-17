@@ -4,8 +4,8 @@
 
 use sql_traits::{HasPrimaryKey, HasRequestBody, RequestBody};
 
-#[derive(Debug, Clone, PartialEq, macros::Database)]
-#[macros(database = Sqlite)]
+#[derive(Debug, Clone, PartialEq, sql_traits::Database)]
+#[sql_traits(database = Sqlite)]
 struct User {
     id: i64,
     name: String,

@@ -22,6 +22,21 @@ supertrait list, because each already has a `sql_traits` supertrait that carries
 crate's own `postgres`/`sqlite`/`mysql`/`any` features forward to the matching feature on
 `sql_traits` (and on `sqlx`), so enabling one here enables it on both.
 
+## The derives, from `axum_helpers_macros`
+
+A private crate this one depends on and re-exports the derives from; consumers never
+declare `axum_helpers_macros` themselves.
+
+**Route markers** — `GetRecordRoute`, `ListRecordsRoute`, `ReplaceRoute`, `UpdateRoute`,
+`DeleteRoute`, `GetLatestRoute` (empty impls, requirements enforced by the trait
+declaration), and `CreateRoute` / `BulkCreateRoute` (a separate emitter: they carry a `'de`
+lifetime and require their SQL trait's `ReturnType: Serialize`).
+
+**Bundle** — `BasicCrudRoutes`, built from the same two emitters as the standalone derives so
+the bundle and the individual macros cannot drift. It excludes `GetLatestRoute` on purpose:
+"the most recent row" is a domain query, not a CRUD operation, and bundling it would force
+every deriving type to implement `GetLatestRecord`.
+
 ## Trait ↔ route ↔ status code
 
 | SQL trait | Route trait | Success | Empty result |
@@ -61,12 +76,14 @@ the key lookup, so an empty body is a `400` whether or not the row exists.
 
 ## Composite primary keys bind by name
 
-A composite `PrimaryKey` is the `{Name}PrimaryKey` struct `macros` generates, and
+A composite `PrimaryKey` is the `{Name}PrimaryKey` struct `sql_traits::Record` (or
+`sql_traits::PrimaryKey`) generates, and
 `axum::extract::Path` fills a struct by field name. Route segments must be *named* after the
 key's fields; the order a route declares them in does not matter, extra segments are ignored,
 and a key field no segment names is a `400` from the extractor before the handler runs.
 
-This is why the generated key type is a struct and not a tuple — see `crates/macros/CLAUDE.md`.
+This is why the generated key type is a struct and not a tuple — see "Two decisions to
+preserve" in `crates/sql_traits/CLAUDE.md`.
 
 ## Pagination is a separate route trait, never a mode of `ListRecordsRoute`
 
@@ -160,8 +177,8 @@ It hands back an `ApiError` rather than a finished `Response`, so the rendering 
 
 `GetRecordWhereRoute`, `ListRecordsWhereRoute` and `DeleteRecordsWhereRoute` each declare a
 `PathParams` associated type bounded `Into<T>`, which has to be chosen by the implementor and
-cannot be inferred from the struct. They are therefore invisible to `crates/macros` and to
-`tests/derive_macros.rs`; `tests/route_traits.rs` is their only coverage.
+cannot be inferred from the struct. They are therefore invisible to `axum_helpers_macros` and
+to `tests/derive_macros.rs`; `tests/route_traits.rs` is their only coverage.
 
 ## Errors
 
@@ -216,10 +233,11 @@ silence it.
 Four crates, deliberately split by what they can prove:
 
 - `derive_macros.rs` — the derives' output compiles and type-checks with only `axum_helpers`
-  and `macros` in scope. Derived impls are checked whether or not they are used, so their
-  existence forces every generated path to resolve. It has no `GetLatestRecord` impl on
-  purpose: if `BasicCrudRoutes` started bundling `GetLatestRoute` again, this file would stop
-  compiling.
+  in scope, reaching the derives through its own re-export rather than declaring
+  `axum_helpers_macros` directly. Derived impls are checked whether or not they are used, so
+  their existence forces every generated path to resolve. It has no `GetLatestRecord` impl
+  on purpose: if `BasicCrudRoutes` started bundling `GetLatestRoute` again, this file would
+  stop compiling.
 - `pagination_params.rs` — the query types in isolation, driven directly with
   `Query::try_from_uri` rather than through a mounted handler. Its subject is the type: what a
   URL deserializes into, what `Default` fills in, what `validate` rejects, and what `From`
@@ -235,3 +253,12 @@ Four crates, deliberately split by what they can prove:
   query. Driving a `Router` with a real request is the only way to exercise URL-segment
   binding either way: calling a handler directly takes a `Path` built by hand, which proves
   nothing about which segment filled which field.
+
+`axum_helpers_macros`' own tests are the opposite shape: unit tests in its `src/lib.rs`, the
+exception to that rule. They assert on the token strings the private `expand_*` functions
+return, which is only reachable in-crate — it is why `proc_macro::TokenStream` appears
+solely in the `#[proc_macro_derive]` signatures there, with every expansion function taking
+and returning `proc_macro2::TokenStream`. Token-string assertions cannot tell you whether
+the output *resolves*; that half is covered from outside, by `sql_traits/tests/derive_macros.rs`,
+`axum_helpers/tests/derive_macros.rs` and `generic_helpers/tests/derive_macros.rs`. A change
+to an emitted path needs both.

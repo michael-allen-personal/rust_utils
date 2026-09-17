@@ -2,7 +2,7 @@
 //!
 //! Individual route derives instead of `BasicCrudRoutes`, because the create side is a
 //! separate type: `NewBook` has no `id`, so the database assigns it. That is the case
-//! `macros::Database`'s own documentation describes — an insert-side type needing
+//! `sql_traits::Database`'s own documentation describes — an insert-side type needing
 //! `HasDatabase` without the body-type generation — and the contrast with `authors.rs`,
 //! where the bundle's `POST` carries an explicit id, is the point of having both.
 //!
@@ -87,21 +87,21 @@ fn books_from_rows(rows: Vec<BookRow>) -> Result<Vec<Book>, sqlx::Error> {
 #[derive(
     serde::Serialize,
     serde::Deserialize,
-    macros::Database,
-    macros::Record,
-    macros::Update,
-    macros::GetRecordRoute,
-    macros::ListRecordsRoute,
-    macros::ReplaceRoute,
-    macros::UpdateRoute,
-    macros::DeleteRoute,
+    sql_traits::Database,
+    sql_traits::Record,
+    sql_traits::Update,
+    axum_helpers::GetRecordRoute,
+    axum_helpers::ListRecordsRoute,
+    axum_helpers::ReplaceRoute,
+    axum_helpers::UpdateRoute,
+    axum_helpers::DeleteRoute,
 )]
-#[macros(database = Sqlite)]
-#[macros(body_derive(serde::Serialize, serde::Deserialize))]
-#[macros(update_derive(serde::Deserialize))]
+#[sql_traits(database = Sqlite)]
+#[sql_traits(body_derive(serde::Serialize, serde::Deserialize))]
+#[sql_traits(update_derive(serde::Deserialize))]
 #[serde(crate = "axum_helpers::serde")]
 pub struct Book {
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     pub id: i64,
     pub author_id: i64,
     pub title: String,
@@ -111,9 +111,14 @@ pub struct Book {
 
 /// The insert side. No `id` field, so the database assigns one — which is why `Book` cannot
 /// derive `BasicCrudRoutes`: the bundle's `CreateRoute` deserializes the record itself.
-/// `macros::Database` exists standalone for exactly this shape.
-#[derive(serde::Deserialize, macros::Database, macros::CreateRoute, macros::BulkCreateRoute)]
-#[macros(database = Sqlite)]
+/// `sql_traits::Database` exists standalone for exactly this shape.
+#[derive(
+    serde::Deserialize,
+    sql_traits::Database,
+    axum_helpers::CreateRoute,
+    axum_helpers::BulkCreateRoute,
+)]
+#[sql_traits(database = Sqlite)]
 #[serde(crate = "axum_helpers::serde")]
 pub struct NewBook {
     pub author_id: i64,

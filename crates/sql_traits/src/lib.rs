@@ -4,10 +4,15 @@
 // `Pool`" errors from two incompatible sqlx versions. `async_trait` is re-exported for
 // convenience, since implementing these traits requires the `#[async_trait]` attribute.
 // `serde` is re-exported for both reasons at once: `double_option` names its traits in a
-// signature, and the types `macros::Update` generates need its derives at the use site.
+// signature, and the types [`Update`] generates need its derives at the use site.
 pub use ::async_trait;
 pub use ::serde;
 pub use ::sqlx;
+
+// The derives. They live in the macro namespace, so none of these four names collides with
+// a trait in this crate — and even if one did, `serde::Serialize` shows the two namespaces
+// coexisting on one spelling.
+pub use sql_traits_macros::{Database, PrimaryKey, Record, Update};
 
 mod pagination;
 
@@ -26,7 +31,7 @@ use ::sqlx::Pool;
 /// update-fields machinery never touches a pool, so it stays database-agnostic and a
 /// non-SQL consumer of those traits is unaffected.
 ///
-/// `macros::Database` implements this from `#[macros(database = Sqlite)]`.
+/// [`Database`] implements this from `#[sql_traits(database = Sqlite)]`.
 pub trait HasDatabase {
     type Database: ::sqlx::Database;
 }
@@ -42,7 +47,7 @@ pub trait HasPrimaryKey {
     /// per marked field, matching `PrimaryKey`. It is a struct rather than a tuple so that
     /// `axum::extract::Path` binds each URL segment by name: a tuple binds them by
     /// position, which silently addresses the wrong row whenever a route declares its
-    /// segments in a different order from the marked fields. The `macros::PrimaryKey`
+    /// segments in a different order from the marked fields. The [`PrimaryKey`]
     /// derive implements this by cloning the marked fields, so on a derived impl those
     /// field types must be `Clone`.
     fn primary_key(&self) -> Self::PrimaryKey;
@@ -51,7 +56,7 @@ pub trait HasPrimaryKey {
 /// Associates a record with the request-body type carrying every field except its primary
 /// key, and rebuilds the record from such a body plus the key it belongs to.
 ///
-/// This is the record side of the pair. [`RequestBody`] is the body side; `macros::Record`
+/// This is the record side of the pair. [`RequestBody`] is the body side; [`Record`]
 /// emits both together so the two directions cannot drift apart.
 ///
 /// A route that replaces a record takes the key from the URL path and the body from JSON,
@@ -91,7 +96,7 @@ pub trait RequestBody: Sized {
 /// merges such a set into a record.
 ///
 /// This is the record side of the pair, mirroring [`HasRequestBody`] exactly:
-/// [`UpdateFields`] is the fields side, and `macros::Update` emits both together so the
+/// [`UpdateFields`] is the fields side, and [`Update`] emits both together so the
 /// two directions cannot drift apart.
 ///
 /// Where [`HasRequestBody::RequestBody`] carries *every* non-key field, an update-fields
@@ -131,7 +136,7 @@ pub trait HasUpdateFields: HasPrimaryKey + Sized {
 /// | `Option<i32>`   | `Option<Option<i32>>`  | `None` | `Some(None)` | `Some(Some(v))` |
 ///
 /// Deserializing that middle column from JSON needs [`double_option`]; a plain derive
-/// collapses `null` into the absent case. `macros::Update` emits the attribute for you on
+/// collapses `null` into the absent case. [`Update`] emits the attribute for you on
 /// every field it can see is nullable.
 pub trait UpdateFields: Sized {
     /// The record these fields are a partial update to.
@@ -156,7 +161,7 @@ pub trait UpdateFields: Sized {
 /// `serde` maps a missing key and a `null` onto the same `None` for `Option<Option<T>>`,
 /// which would collapse "clear this column" into "leave it alone". Reading the value as
 /// `Option<T>` and wrapping it in `Some` unconditionally keeps them apart: the `Some` here
-/// means "the key was present", and only `#[serde(default)]` — which `macros::Update`
+/// means "the key was present", and only `#[serde(default)]` — which [`Update`]
 /// emits alongside this — produces the `None` that means it was not.
 ///
 /// Pair the two on every nullable field:
@@ -166,7 +171,7 @@ pub trait UpdateFields: Sized {
 /// qty: Option<Option<i32>>,
 /// ```
 ///
-/// `macros::Update` emits both attributes for you. This is public because the code it
+/// [`Update`] emits both attributes for you. This is public because the code it
 /// generates has to name it; there is little reason to call it by hand.
 #[doc(hidden)]
 pub fn double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>

@@ -4,24 +4,22 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# Every leaked type is reached through this crate's re-exports — axum, serde, sqlx,
-# sql_traits, async_trait — which is what makes building this crate an assertion that the
-# re-export surface is sufficient to write a real application. Adding a direct `serde` or
-# `sqlx` dependency here would defeat that; if the sample cannot build without one, the
-# finding belongs in the library, not in this manifest.
+# Every leaked type but one is reached through this crate's re-exports — axum, serde, sqlx,
+# async_trait — which is what makes building this crate an assertion that the re-export
+# surface is sufficient to write a real application. Adding a direct `serde` or `sqlx`
+# dependency here would defeat that; if the sample cannot build without one, the finding
+# belongs in the library, not in this manifest. `sql_traits` is the one exception, named
+# directly below, and the comment there says why.
 axum_helpers = { workspace = true, features = ["sqlite"] }
 # `str_enum!`, used for the `Genre` column in `books.rs`.
 generic_helpers = { workspace = true }
-# The derives. `macros` depends on none of the crates it generates code for, so its output
-# resolving here — through the re-exports above — is the consumer-perspective check.
-macros = { path = "../../crates/macros" }
-# Declared for manifest-level (extern prelude) reasons only — no source file imports
-# `sql_traits::…` directly, every type still comes from `axum_helpers::sql_traits::…`.
-# `macros::Record`/`Update`/`Database`/`PrimaryKey` emit bare `::sql_traits::…` paths
-# (crate-root-anchored, not routed through any re-export), so rustc's extern prelude must
-# contain `sql_traits` by name for a consumer deriving any of them, exactly as it must for
-# `macros` itself. A path dependency on the same workspace crate `axum_helpers` already
-# depends on, so there is still only one compiled copy.
+# The record derives (`sql_traits::Record`/`Update`/`Database`) and the SQL traits they
+# generate impls for. Named directly rather than reached through `axum_helpers`' re-export,
+# because a derive's generated `::sql_traits::…` paths resolve only where the use site has
+# `sql_traits` in its extern prelude — which writing `sql_traits::Record` guarantees. Same
+# workspace crate `axum_helpers` already depends on, so there is still one compiled copy,
+# and no driver feature is needed here: cargo unifies `axum_helpers`' `sqlite` forward onto
+# this same dependency.
 sql_traits = { workspace = true }
 # The runtime `sqlx` binds to. `axum_helpers`' `sqlite` feature turns the driver on; the
 # runtime is deliberately left to the consumer, and this is the consumer. No source file

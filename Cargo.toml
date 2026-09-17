@@ -6,12 +6,18 @@ members = ["crates/*", "examples/sample_api"]
 async-trait = "0.1"
 axum = "0.8"
 axum_helpers = { path = "./crates/axum_helpers" }
+axum_helpers_macros = { path = "./crates/axum_helpers_macros" }
 chrono = { version = "0.4", features = ["serde"] }
 error_set = "0.9"
 generic_helpers = { path = "./crates/generic_helpers" }
+generic_helpers_macros = { path = "./crates/generic_helpers_macros" }
+proc-macro2 = "1.0"
+quote = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sql_traits = { path = "./crates/sql_traits" }
+sql_traits_macros = { path = "./crates/sql_traits_macros" }
 sqlx = { version = "0.9" }
+syn = "2.0"
 tokio = { version = "1", features = ["macros", "rt"] }
 tower = { version = "0.5", features = ["util"], default-features = false }

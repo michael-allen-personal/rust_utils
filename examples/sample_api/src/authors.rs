@@ -1,6 +1,6 @@
 //! `Author` — the batteries-included path.
 //!
-//! One `#[derive(macros::BasicCrudRoutes)]` implements seven route traits at once, so the
+//! One `#[derive(axum_helpers::BasicCrudRoutes)]` implements seven route traits at once, so the
 //! only handwritten code here is the SQL. `GetLatestRoute` is derived separately because the
 //! bundle deliberately excludes it: "the most recent row" is a domain query rather than a
 //! CRUD operation, and bundling it would force every deriving type to implement
@@ -36,18 +36,18 @@ fn author_from_row((id, name, bio): AuthorRow) -> Author {
 #[derive(
     serde::Serialize,
     serde::Deserialize,
-    macros::Database,
-    macros::Record,
-    macros::Update,
-    macros::BasicCrudRoutes,
-    macros::GetLatestRoute,
+    sql_traits::Database,
+    sql_traits::Record,
+    sql_traits::Update,
+    axum_helpers::BasicCrudRoutes,
+    axum_helpers::GetLatestRoute,
 )]
-#[macros(database = Sqlite)]
-#[macros(body_derive(serde::Serialize, serde::Deserialize))]
-#[macros(update_derive(serde::Deserialize))]
+#[sql_traits(database = Sqlite)]
+#[sql_traits(body_derive(serde::Serialize, serde::Deserialize))]
+#[sql_traits(update_derive(serde::Deserialize))]
 #[serde(crate = "axum_helpers::serde")]
 pub struct Author {
-    #[macros(primary_key)]
+    #[sql_traits(primary_key)]
     pub id: i64,
     pub name: String,
     pub bio: Option<String>,
