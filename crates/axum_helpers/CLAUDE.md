@@ -48,19 +48,49 @@ every deriving type to implement `GetLatestRecord`.
 | `ListRecordsPaginated<OffsetParams>` | `ListRecordsPaginatedRoute<OffsetParamsQuery<..>>` | `200` + envelope | — |
 | `ListRecordsPaginated<CursorParams<C>>` | `ListRecordsPaginatedRoute<CursorParamsQuery<C, ..>>` | `200` + envelope | — |
 | `ListRecordsWherePaginated<T, P>` | `ListRecordsWherePaginatedRoute<T, Q>` | `200` + envelope | — |
-| `InsertRecord` / `BulkInsertRecords` | `CreateRoute` / `BulkCreateRoute` | `201` + JSON | — |
+| `InsertRecord` / `BulkInsertRecords` | `CreateRoute` / `BulkCreateRoute` | `201` + JSON | `201`, no body |
 | `ReplaceRecord` | `ReplaceRoute` | `200` + JSON | `404` |
 | `UpdateRecord` | `UpdateRoute` | `200` + JSON | `404`, or `400` if the body is empty |
-| `DeleteRecord` | `DeleteRoute` | `204` | — |
-| `DeleteRecordsWhere<T>` | `DeleteRecordsWhereRoute<T>` | `200` + JSON | — |
+| `DeleteRecord` | `DeleteRoute` | `200` + JSON | `204` |
+| `DeleteRecordsWhere<T>` | `DeleteRecordsWhereRoute<T>` | `200` + JSON | `204` |
 
-`GetLatestRoute` is the one `204`: an empty table is not a missing resource, whereas a
-caller who addressed a specific record and got nothing has hit a `404`. The three fetch-one
+For the fetch routes "empty" means the query matched no row. For the four mutation routes it
+means the `ReturnType` serialized to JSON `null` — see **Mutation responses** below.
+
+`GetLatestRoute` is the one fetch route answering `204`: an empty table is not a missing
+resource, whereas a caller who addressed a specific record and got nothing has hit a `404`. The three fetch-one
 handlers share `optional_record_response`, which takes the not-found behaviour as its only
 parameter — keep that the single place the decision is made.
 
-`DeleteRoute` discards its return value; `DeleteRecordsWhereRoute` serializes it, so a caller
-can see what the delete actually matched.
+## Mutation responses: the null rule, behind an overridable hook
+
+`CreateRoute`, `BulkCreateRoute`, `DeleteRoute` and `DeleteRecordsWhereRoute` each render
+their SQL trait's successful `ReturnType` through a provided, non-async hook —
+`create_response`, `bulk_create_response`, `delete_response`, `delete_records_where_response`.
+Every default calls the private `mutation_response`, which serializes the value once: bytes of
+exactly `null` (`()`, a unit struct, `None`) answer the route's "no body" status — `204` for a
+delete, a bodyless `201` for a create — and anything else answers `200`/`201` with those bytes
+as `application/json`. A value that fails to serialize is `ApiError::Serde`, a `500` in this
+crate's message shape. This replaced hardcoded responses that dropped `DeleteRecord`'s value
+and sent `200 null` / `201 null` for a `()` return (issue #11).
+
+Three decisions to keep:
+
+- **The rule reads the serialized bytes, not the type.** Stable Rust cannot specialize on `()`,
+  and a `MutationResponse`-style trait was rejected because every consumer type would need an
+  impl or a wrapper. The value is serialized for the response anyway, so the check is free.
+- **`None` is not a `404`.** It serializes to `null` like `()`, so it gets the no-body status.
+  A route that wants a missing key reported overrides the hook; `sample_api`'s `Book` does
+  exactly that.
+- **The hook only sees a success.** The handler matches on the `Result` and renders the error
+  itself, so no override can change the `{"message": …}` error shape.
+
+The `ReturnType: Serialize` bound is on the trait, not the hook, and binds even a type that
+overrides the hook: a provided method's body must compile for every implementor, and the
+default needs `Serialize`. A derived impl uses the defaults; overriding means writing the impl
+by hand. `DeleteRoute`'s derive stays an empty `marker_impl` despite the new bound — a
+concrete impl's `where` clauses are checked at the impl, as its `PrimaryKey: DeserializeOwned`
+bound already was.
 
 ## Two things route traits enforce that are easy to lose
 

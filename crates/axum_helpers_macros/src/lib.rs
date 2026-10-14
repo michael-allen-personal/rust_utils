@@ -84,7 +84,14 @@ fn expand_basic_crud_routes(input: TokenStream2) -> TokenStream2 {
     }
 }
 
-/// Derive `DeleteRoute` (requires the type to implement DeleteRecord + HasPrimaryKey).
+/// Derive `DeleteRoute` (requires the type to implement DeleteRecord + HasPrimaryKey, with a
+/// `DeserializeOwned` `PrimaryKey` and a `Serialize` `DeleteRecord::ReturnType`).
+///
+/// The impl is empty, so it answers with the default `delete_response`: `200` + JSON, or
+/// `204` when the `ReturnType` serializes to `null`. A type overriding that hook writes the
+/// impl by hand instead of deriving it. Unlike the insert routes, the `Serialize` bound needs
+/// no `where` clause here: a concrete impl's trait bounds are checked at the impl, and only
+/// the `'de` lifetime keeps the insert routes off `marker_impl`.
 #[proc_macro_derive(DeleteRoute)]
 pub fn derive_delete_route(input: TokenStream) -> TokenStream {
     expand_marker(input.into(), quote! { ::axum_helpers::DeleteRoute }).into()

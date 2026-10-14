@@ -135,9 +135,9 @@ impl axum_helpers::sql_traits::GetLatestRecord for Gizmo {
 
 // Concrete check for the route traits without lifetime parameters. The `CreateRoute`
 // and `BulkCreateRoute` impls are verified by the compiler through the derive above.
-// The `DeserializeOwned` bound is restated because a trait's `where` clause is not
-// elaborated into a generic caller's environment. Concrete impls (what the derive emits)
-// do not need this — they get the requirement checked at the impl site.
+// The `DeserializeOwned` and `Serialize` bounds are restated because a trait's `where`
+// clause is not elaborated into a generic caller's environment. Concrete impls (what the
+// derive emits) do not need this — they get the requirement checked at the impl site.
 fn assert_routes<T>()
 where
     T: axum_helpers::GetRecordRoute
@@ -147,6 +147,7 @@ where
         + axum_helpers::DeleteRoute,
     <T as axum_helpers::sql_traits::HasPrimaryKey>::PrimaryKey:
         axum_helpers::serde::de::DeserializeOwned,
+    <T as axum_helpers::sql_traits::DeleteRecord>::ReturnType: axum_helpers::serde::Serialize,
     <T as axum_helpers::sql_traits::HasRequestBody>::RequestBody:
         axum_helpers::serde::de::DeserializeOwned + Send + 'static,
     <T as axum_helpers::sql_traits::HasUpdateFields>::UpdateFields:

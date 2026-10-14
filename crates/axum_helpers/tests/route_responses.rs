@@ -800,3 +800,286 @@ async fn a_paginated_where_route_rejects_an_over_max_limit() {
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+// --- Mutation responses ----------------------------------------------------------------
+//
+// Whether a create or delete answers with a body is decided by what its `ReturnType`
+// serializes to, so each case needs its own `ReturnType` — and a type has only one per SQL
+// trait, hence one small fixture per shape. All fake their SQL impls: the subject is how a
+// returned value is rendered, not the query that produced it. Handlers are called directly,
+// since no URL-segment binding is under test here.
+
+use axum_helpers::axum::response::Response;
+use axum_helpers::sql_traits::{BulkInsertRecords, DeleteRecord, DeleteRecordsWhere, InsertRecord};
+use axum_helpers::{BulkCreateRoute, CreateRoute, DeleteRecordsWhereRoute, DeleteRoute};
+
+/// The key the mutation fixtures treat as failing with a database error.
+const FAILING_ID: i64 = 500;
+
+/// Status, `Content-Type` and body of a rendered response.
+async fn rendered(response: Response) -> (StatusCode, Option<String>, String) {
+    use axum_helpers::axum::body::to_bytes;
+    use axum_helpers::axum::http::header::CONTENT_TYPE;
+
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .map(|value| value.to_str().expect("an ascii header").to_owned());
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("a complete body");
+    (
+        status,
+        content_type,
+        String::from_utf8(bytes.to_vec()).expect("utf-8"),
+    )
+}
+
+/// Every mutation returns a value worth reporting: a delete counts rows, a bulk insert
+/// returns the assigned keys, and a filtered delete returns `()` — the one shape here with
+/// nothing to say.
+#[derive(serde::Deserialize, sql_traits::Database)]
+#[sql_traits(database = Sqlite)]
+#[serde(crate = "axum_helpers::serde")]
+struct Counted {
+    id: i64,
+}
+
+impl HasPrimaryKey for Counted {
+    type PrimaryKey = i64;
+    fn primary_key(&self) -> i64 {
+        self.id
+    }
+}
+
+#[async_trait]
+impl DeleteRecord for Counted {
+    type ReturnType = u64;
+    async fn delete_record(_pool: &Pool<Sqlite>, _primary_key: i64) -> Result<u64, sqlx::Error> {
+        Ok(3)
+    }
+}
+
+impl DeleteRoute for Counted {}
+
+#[async_trait]
+impl BulkInsertRecords for Counted {
+    type ReturnType = Vec<i64>;
+    async fn bulk_insert_records(
+        _pool: &Pool<Sqlite>,
+        records: &[Self],
+    ) -> Result<Vec<i64>, sqlx::Error> {
+        Ok(records.iter().map(|record| record.id).collect())
+    }
+}
+
+impl BulkCreateRoute<'_> for Counted {}
+
+#[derive(serde::Deserialize)]
+#[serde(crate = "axum_helpers::serde")]
+struct CountedFilter {
+    #[allow(dead_code)]
+    id: i64,
+}
+
+#[async_trait]
+impl DeleteRecordsWhere<CountedFilter> for Counted {
+    type ReturnType = ();
+    async fn delete_records_where(
+        _pool: &Pool<Sqlite>,
+        _where_params: CountedFilter,
+    ) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+}
+
+impl DeleteRecordsWhereRoute<CountedFilter> for Counted {
+    type PathParams = CountedFilter;
+}
+
+/// The opposite shape: a delete and an insert that both return `()`.
+#[derive(serde::Deserialize, sql_traits::Database)]
+#[sql_traits(database = Sqlite)]
+#[serde(crate = "axum_helpers::serde")]
+struct Silent {
+    id: i64,
+}
+
+impl HasPrimaryKey for Silent {
+    type PrimaryKey = i64;
+    fn primary_key(&self) -> i64 {
+        self.id
+    }
+}
+
+#[async_trait]
+impl DeleteRecord for Silent {
+    type ReturnType = ();
+    async fn delete_record(_pool: &Pool<Sqlite>, _primary_key: i64) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+}
+
+impl DeleteRoute for Silent {}
+
+#[async_trait]
+impl InsertRecord for Silent {
+    type ReturnType = ();
+    async fn insert_record(self, _pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+}
+
+impl CreateRoute<'_> for Silent {}
+
+/// A delete returning `Option<u64>`: `None` for `MISSING_ID`, `Some(1)` otherwise.
+#[derive(sql_traits::Database)]
+#[sql_traits(database = Sqlite)]
+struct Maybe {
+    id: i64,
+}
+
+impl HasPrimaryKey for Maybe {
+    type PrimaryKey = i64;
+    fn primary_key(&self) -> i64 {
+        self.id
+    }
+}
+
+#[async_trait]
+impl DeleteRecord for Maybe {
+    type ReturnType = Option<u64>;
+    async fn delete_record(
+        _pool: &Pool<Sqlite>,
+        primary_key: i64,
+    ) -> Result<Option<u64>, sqlx::Error> {
+        Ok((primary_key != MISSING_ID).then_some(1))
+    }
+}
+
+impl DeleteRoute for Maybe {}
+
+/// Overrides the response hook, and fails with a database error for `FAILING_ID`.
+#[derive(sql_traits::Database)]
+#[sql_traits(database = Sqlite)]
+struct Overridden {
+    id: i64,
+}
+
+impl HasPrimaryKey for Overridden {
+    type PrimaryKey = i64;
+    fn primary_key(&self) -> i64 {
+        self.id
+    }
+}
+
+#[async_trait]
+impl DeleteRecord for Overridden {
+    type ReturnType = u64;
+    async fn delete_record(_pool: &Pool<Sqlite>, primary_key: i64) -> Result<u64, sqlx::Error> {
+        if primary_key == FAILING_ID {
+            Err(sqlx::Error::RowNotFound)
+        } else {
+            Ok(1)
+        }
+    }
+}
+
+impl DeleteRoute for Overridden {
+    fn delete_response(rows_affected: u64) -> Response {
+        use axum_helpers::axum::response::IntoResponse;
+
+        (StatusCode::ACCEPTED, format!("overridden: {rows_affected}")).into_response()
+    }
+}
+
+#[tokio::test]
+async fn a_delete_returning_a_count_answers_200_with_the_count_as_json() {
+    let response = Counted::delete_route(State(pool().await), Path(1)).await;
+
+    let (status, content_type, body) = rendered(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type.as_deref(), Some("application/json"));
+    assert_eq!(body, "3");
+}
+
+#[tokio::test]
+async fn a_delete_returning_unit_answers_204_with_no_body() {
+    let response = Silent::delete_route(State(pool().await), Path(1)).await;
+
+    let (status, content_type, body) = rendered(response).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(content_type, None);
+    assert_eq!(body, "");
+}
+
+/// `None` is a `204` like `()`, never a `404`: the null rule reads the serialized value, not
+/// what an `Option` might mean to a particular implementation.
+#[tokio::test]
+async fn a_delete_returning_none_answers_204_not_404() {
+    let missing = Maybe::delete_route(State(pool().await), Path(MISSING_ID)).await;
+    let present = Maybe::delete_route(State(pool().await), Path(1)).await;
+
+    let (status, _, body) = rendered(missing).await;
+    assert_eq!((status, body.as_str()), (StatusCode::NO_CONTENT, ""));
+    let (status, _, body) = rendered(present).await;
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "1"));
+}
+
+#[tokio::test]
+async fn a_filtered_delete_returning_unit_answers_204_not_200_null() {
+    let response = <Counted as DeleteRecordsWhereRoute<CountedFilter>>::delete_records_where_route(
+        State(pool().await),
+        Path(CountedFilter { id: 1 }),
+    )
+    .await;
+
+    let (status, _, body) = rendered(response).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(body, "");
+}
+
+#[tokio::test]
+async fn a_create_returning_unit_answers_201_with_no_body_not_null() {
+    let response = Silent::create_route(State(pool().await), Json(Silent { id: 1 })).await;
+
+    let (status, content_type, body) = rendered(response).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(content_type, None);
+    assert_eq!(body, "");
+}
+
+#[tokio::test]
+async fn a_bulk_create_returning_values_answers_201_with_them_as_json() {
+    let response = Counted::bulk_create_route(
+        State(pool().await),
+        Json(vec![Counted { id: 1 }, Counted { id: 2 }]),
+    )
+    .await;
+
+    let (status, content_type, body) = rendered(response).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(content_type.as_deref(), Some("application/json"));
+    assert_eq!(body, "[1,2]");
+}
+
+#[tokio::test]
+async fn an_overridden_hook_renders_the_success() {
+    let response = Overridden::delete_route(State(pool().await), Path(1)).await;
+
+    let (status, _, body) = rendered(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(body, "overridden: 1");
+}
+
+/// The hook only ever sees a success, so no override can change the error shape: a failed
+/// delete is still this crate's `500` with a `{"message": …}` body.
+#[tokio::test]
+async fn an_overridden_hook_never_sees_an_error() {
+    let response = Overridden::delete_route(State(pool().await), Path(FAILING_ID)).await;
+
+    let (status, _, body) = rendered(response).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(body.contains(r#""message""#), "got {body}");
+}

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use axum::{
     extract::{self, Path, Query, State, rejection::QueryRejection},
-    http::StatusCode,
+    http::{StatusCode, header},
     response::{self, IntoResponse, Response},
 };
 use serde::de::DeserializeOwned;
@@ -28,6 +28,32 @@ fn optional_record_response<T: serde::Serialize>(
         Ok(Some(record)) => (StatusCode::OK, response::Json(record)).into_response(),
         Ok(None) => on_missing(),
         Err(api_error) => api_error.into_response(),
+    }
+}
+
+/// Renders a mutation's successful `ReturnType`, the default behind every `*_response` hook:
+/// `with_body` and the value as JSON, or `without_body` with no body at all when the value
+/// serializes to JSON `null` — which `()`, a unit struct and `None` all do.
+///
+/// Deciding on the serialized bytes rather than the type is what lets this serve every
+/// `Serialize` return type without a trait of its own: stable Rust cannot specialize on `()`,
+/// and the value has to be serialized for the response anyway, so the check costs one
+/// four-byte comparison. A value that fails to serialize is `ApiError::Serde`, a `500` in this
+/// crate's `{"message": …}` shape, rather than axum's plain-text one.
+fn mutation_response<T: serde::Serialize>(
+    value: T,
+    with_body: StatusCode,
+    without_body: StatusCode,
+) -> Response {
+    match serde_json::to_vec(&value) {
+        Ok(bytes) if bytes == b"null" => without_body.into_response(),
+        Ok(bytes) => (
+            with_body,
+            [(header::CONTENT_TYPE, "application/json")],
+            bytes,
+        )
+            .into_response(),
+        Err(error) => ApiError::Serde(error).into_response(),
     }
 }
 
@@ -258,47 +284,78 @@ where
 
 /// Axum route handler for creating a single record from a JSON request body.
 ///
-/// Returns `201 Created` with the `InsertRecord::ReturnType` as JSON.
+/// Returns `201 Created` with the `InsertRecord::ReturnType` as JSON, or `201 Created` with no
+/// body when the `ReturnType` serializes to `null` (`()`, a unit struct, `None`). Override
+/// [`create_response`](CreateRoute::create_response) to answer differently.
 #[async_trait]
 pub trait CreateRoute<'de>: InsertRecord + serde::Deserialize<'de>
 where
     <Self as InsertRecord>::ReturnType: serde::Serialize,
 {
+    /// Renders a successful insert. Only ever called with a success: a failed insert is
+    /// rendered as this crate's error response without reaching this method, so an override
+    /// cannot change the error shape.
+    ///
+    /// The default answers `201 Created` with `created` as JSON, or with no body when it
+    /// serializes to `null`.
+    fn create_response(created: <Self as InsertRecord>::ReturnType) -> Response {
+        mutation_response(created, StatusCode::CREATED, StatusCode::CREATED)
+    }
+
     // TODO: Add a function for logging
     async fn create_route(
         State(pool): State<Pool<<Self as HasDatabase>::Database>>,
         extract::Json(obj): extract::Json<Self>,
     ) -> Response {
-        obj.insert_record(&pool)
-            .await
-            .map_err(ApiError::from)
-            .map(|record| (StatusCode::CREATED, response::Json(record)))
-            .into_response()
+        match obj.insert_record(&pool).await {
+            Ok(created) => Self::create_response(created),
+            Err(error) => ApiError::from(error).into_response(),
+        }
     }
 }
 
 /// Axum route handler for creating multiple records from a JSON array request body.
 ///
-/// Returns `201 Created` with the `BulkInsertRecords::ReturnType` as JSON.
+/// Returns `201 Created` with the `BulkInsertRecords::ReturnType` as JSON, or `201 Created`
+/// with no body when the `ReturnType` serializes to `null` — so a bulk insert that returns
+/// `()` to avoid fetching every created row answers an empty `201`, not a `null` body.
+/// Override [`bulk_create_response`](BulkCreateRoute::bulk_create_response) to answer
+/// differently.
 #[async_trait]
 pub trait BulkCreateRoute<'de>: BulkInsertRecords + serde::Deserialize<'de>
 where
     <Self as BulkInsertRecords>::ReturnType: serde::Serialize,
 {
+    /// Renders a successful bulk insert. Only ever called with a success, like
+    /// [`CreateRoute::create_response`].
+    ///
+    /// The default answers `201 Created` with `created` as JSON, or with no body when it
+    /// serializes to `null`.
+    fn bulk_create_response(created: <Self as BulkInsertRecords>::ReturnType) -> Response {
+        mutation_response(created, StatusCode::CREATED, StatusCode::CREATED)
+    }
+
     // TODO: Add a function for logging
     async fn bulk_create_route(
         State(pool): State<Pool<<Self as HasDatabase>::Database>>,
         extract::Json(objs): extract::Json<Vec<Self>>,
     ) -> Response {
-        Self::bulk_insert_records(&pool, &objs)
-            .await
-            .map_err(ApiError::from)
-            .map(|records| (StatusCode::CREATED, response::Json(records)))
-            .into_response()
+        match Self::bulk_insert_records(&pool, &objs).await {
+            Ok(created) => Self::bulk_create_response(created),
+            Err(error) => ApiError::from(error).into_response(),
+        }
     }
 }
 
 /// Axum route handler for deleting a record by its primary key extracted from the URL path.
+///
+/// Returns `200 OK` with the `DeleteRecord::ReturnType` as JSON, or `204 No Content` when the
+/// `ReturnType` serializes to `null` (`()`, a unit struct, `None`). A delete returning a row
+/// count therefore answers `200` with the count; one that should answer `204` regardless
+/// either returns `()` or overrides [`delete_response`](DeleteRoute::delete_response).
+///
+/// `None` is not read as "no such row": it is a `204` like `()`, never a `404`. A delete
+/// that wants to report a missing key does so by overriding the hook.
 ///
 /// # Composite primary keys
 ///
@@ -312,39 +369,64 @@ where
 pub trait DeleteRoute: DeleteRecord + HasPrimaryKey
 where
     <Self as HasPrimaryKey>::PrimaryKey: DeserializeOwned,
+    <Self as DeleteRecord>::ReturnType: serde::Serialize,
 {
+    /// Renders a successful delete. Only ever called with a success: a failed delete is
+    /// rendered as this crate's error response without reaching this method, so an override
+    /// cannot change the error shape.
+    ///
+    /// The default answers `200 OK` with `deleted` as JSON, or `204 No Content` when it
+    /// serializes to `null`. An override still needs the `ReturnType: Serialize` bound the
+    /// trait declares, since the default has to compile for every implementor.
+    fn delete_response(deleted: <Self as DeleteRecord>::ReturnType) -> Response {
+        mutation_response(deleted, StatusCode::OK, StatusCode::NO_CONTENT)
+    }
+
     // TODO: Add a function for logging
     async fn delete_route(
         State(pool): State<Pool<<Self as HasDatabase>::Database>>,
         Path(primary_key): Path<<Self as HasPrimaryKey>::PrimaryKey>,
     ) -> Response {
-        <Self as DeleteRecord>::delete_record(&pool, primary_key)
-            .await
-            .map_err(ApiError::from)
-            .map(|_| StatusCode::NO_CONTENT)
-            .into_response()
+        match <Self as DeleteRecord>::delete_record(&pool, primary_key).await {
+            Ok(deleted) => Self::delete_response(deleted),
+            Err(error) => ApiError::from(error).into_response(),
+        }
     }
 }
 
 /// Axum route handler for deleting records matching a filter extracted from the URL path.
 ///
-/// Returns `200 OK` with `DeleteRecordsWhere<T>::ReturnType` as JSON.
+/// Returns `200 OK` with `DeleteRecordsWhere<T>::ReturnType` as JSON, so a caller can see what
+/// the delete matched, or `204 No Content` when the `ReturnType` serializes to `null`.
+/// Override [`delete_records_where_response`](DeleteRecordsWhereRoute::delete_records_where_response)
+/// to answer differently.
 #[async_trait]
 pub trait DeleteRecordsWhereRoute<T: Send>: DeleteRecordsWhere<T>
 where
     <Self as DeleteRecordsWhere<T>>::ReturnType: serde::Serialize,
 {
     type PathParams: Into<T> + DeserializeOwned + Send + 'static;
+
+    /// Renders a successful filtered delete. Only ever called with a success, like
+    /// [`DeleteRoute::delete_response`].
+    ///
+    /// The default answers `200 OK` with `deleted` as JSON, or `204 No Content` when it
+    /// serializes to `null`.
+    fn delete_records_where_response(
+        deleted: <Self as DeleteRecordsWhere<T>>::ReturnType,
+    ) -> Response {
+        mutation_response(deleted, StatusCode::OK, StatusCode::NO_CONTENT)
+    }
+
     // TODO: Add a function for logging
     async fn delete_records_where_route(
         State(pool): State<Pool<<Self as HasDatabase>::Database>>,
         Path(path_params): Path<Self::PathParams>,
     ) -> Response {
-        Self::delete_records_where(&pool, path_params.into())
-            .await
-            .map_err(ApiError::from)
-            .map(|response| (StatusCode::OK, response::Json(response)))
-            .into_response()
+        match Self::delete_records_where(&pool, path_params.into()).await {
+            Ok(deleted) => Self::delete_records_where_response(deleted),
+            Err(error) => ApiError::from(error).into_response(),
+        }
     }
 }
 

@@ -34,6 +34,42 @@
   then `#[macros(` to `#[sql_traits(`. No driver feature is needed on the `sql_traits` line —
   cargo unifies the one already set on `axum_helpers` onto the same compiled copy
 
+- **Breaking.** `CreateRoute`, `BulkCreateRoute`, `DeleteRoute` and `DeleteRecordsWhereRoute`
+  now decide whether to send a body from what their SQL trait's `ReturnType` serializes to.
+  A value serializing to JSON `null` — `()`, a unit struct, `None` — answers `204 No Content`
+  for a delete and a bodyless `201 Created` for a create; anything else answers `200`/`201`
+  with the value as JSON. Each route renders that through a new provided hook,
+  `create_response`, `bulk_create_response`, `delete_response` and
+  `delete_records_where_response`, which an impl overrides to answer differently. The hook is
+  only ever called with a success, so an override cannot change the `{"message": …}` error
+  shape. (#11)
+
+  The old responses were hardcoded, and two of them were wrong. `DeleteRoute` always answered
+  `204` and threw away whatever `DeleteRecord` returned, so a delete that counted rows could
+  not report the count. The others always serialized, so a `()` return — which
+  `BulkInsertRecords`' own documentation suggests for bulk inserts — answered `201` or `200`
+  with a body of `null`. A trait for return types to implement was considered and rejected:
+  every consumer summary type would have needed an impl or a wrapper. Reading the serialized
+  bytes needs neither, and the value is serialized for the response anyway.
+
+  Only one part of this is a compile error. `DeleteRoute` now requires
+  `DeleteRecord::ReturnType: Serialize`, as the other three already required of theirs; derive
+  `Serialize` on the type or return `()`. A generic function bounded on `DeleteRoute` has to
+  restate that bound, the same way it already restates `PrimaryKey: DeserializeOwned`. **The
+  rest changes behaviour with nothing to warn you:**
+
+  - A `DeleteRecord` returning a value, such as a `u64` row count, answered `204` and now
+    answers `200` with the value. To keep `204`, return `()` or override `delete_response`.
+  - A `DeleteRecordsWhere` returning `()` answered `200` with `null` and now answers `204`.
+  - An `InsertRecord` or `BulkInsertRecords` returning `()` answered `201` with `null` and
+    now answers `201` with no body and no `Content-Type`.
+  - A `ReturnType` of `Option<T>` returning `None` now gets the no-body status. It is never
+    read as "not found"; a delete that should answer `404` for a missing key overrides
+    `delete_response`, as `sample_api`'s `Book` does.
+
+  Clients that parsed the old `null` body, or that treated a delete's `204` as the only
+  success, need checking along with the server.
+
 ### Added
 
 - `generic_helpers` crate, moved here from the `data-monorepo` repo (where it was
