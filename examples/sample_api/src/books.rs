@@ -10,6 +10,8 @@
 
 use axum_helpers::async_trait::async_trait;
 use axum_helpers::axum::Router;
+use axum_helpers::axum::http::StatusCode;
+use axum_helpers::axum::response::{IntoResponse, Response};
 use axum_helpers::axum::routing::{get, post};
 use axum_helpers::serde;
 use axum_helpers::sql_traits::{
@@ -19,8 +21,8 @@ use axum_helpers::sql_traits::{
 };
 use axum_helpers::sqlx::{self, Pool, QueryBuilder, Sqlite};
 use axum_helpers::{
-    BulkCreateRoute, CreateRoute, CursorParamsQuery, DefaultOffsetParamsQuery, DeleteRoute,
-    GetRecordRoute, GetRecordWhereRoute, ListRecordsPaginatedRoute, ListRecordsRoute,
+    ApiError, BulkCreateRoute, CreateRoute, CursorParamsQuery, DefaultOffsetParamsQuery,
+    DeleteRoute, GetRecordRoute, GetRecordWhereRoute, ListRecordsPaginatedRoute, ListRecordsRoute,
     ListRecordsWhereRoute, ReplaceRoute, UpdateRoute,
 };
 use generic_helpers::str_enum;
@@ -94,7 +96,6 @@ fn books_from_rows(rows: Vec<BookRow>) -> Result<Vec<Book>, sqlx::Error> {
     axum_helpers::ListRecordsRoute,
     axum_helpers::ReplaceRoute,
     axum_helpers::UpdateRoute,
-    axum_helpers::DeleteRoute,
 )]
 #[sql_traits(database = Sqlite)]
 #[sql_traits(body_derive(serde::Serialize, serde::Deserialize))]
@@ -287,6 +288,24 @@ impl DeleteRecord for Book {
             .execute(pool)
             .await
             .map(|result| result.rows_affected())
+    }
+}
+
+/// Written out rather than derived, to override the response hook — the one route in this
+/// sample that does. The default would answer `200` with the affected-row count
+/// `delete_record` returns, which is what `authors.rs` takes. This one answers `404` when the
+/// key matched no row and a bare `204` when it did: a default cannot make that call, since
+/// the count means "not found" only because this impl says so.
+///
+/// Errors never reach the hook. A failed `DELETE` is still this crate's `500` in its
+/// `{"message": …}` shape, whatever the override does.
+impl DeleteRoute for Book {
+    fn delete_response(rows_affected: u64) -> Response {
+        if rows_affected == 0 {
+            ApiError::NotFoundError.into_response()
+        } else {
+            StatusCode::NO_CONTENT.into_response()
+        }
     }
 }
 

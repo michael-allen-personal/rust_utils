@@ -165,9 +165,10 @@ pub struct ReviewFilter {
     pub book_id: i64,
 }
 
-/// `DeleteRecordsWhereRoute` **serializes** its return value, unlike `DeleteRoute`, which
-/// discards it — so a caller can see what the delete actually matched. That is why this
-/// `ReturnType` is a count and the one on `DeleteRecord` above may as well be anything.
+/// Both delete routes **serialize** their return value, so a caller can see what the delete
+/// actually matched: this one answers `200` with the count of reviews removed, and the
+/// derived `DeleteRoute` above answers `200` with `0` or `1`. A `ReturnType` of `()` would
+/// make either one a `204` instead.
 #[async_trait]
 impl DeleteRecordsWhere<ReviewFilter> for Review {
     type ReturnType = u64;

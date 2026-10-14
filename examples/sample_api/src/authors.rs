@@ -174,6 +174,9 @@ impl UpdateRecord for Author {
     }
 }
 
+/// Takes `DeleteRoute`'s default response, bundled in by `BasicCrudRoutes`: the affected-row
+/// count serializes to a number, so `DELETE /authors/{author_id}` answers `200` with `1`, or
+/// `0` for a key that matched nothing. `books.rs` overrides the hook for the other shape.
 #[async_trait]
 impl DeleteRecord for Author {
     type ReturnType = u64;

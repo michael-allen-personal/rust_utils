@@ -65,7 +65,10 @@ deriving `sql_traits::Record` actually exercise whether the dependency has to be
 - `authors.rs` — the batteries-included path. One `#[derive(axum_helpers::BasicCrudRoutes)]`
   implements seven route traits at once; `GetLatestRoute` is derived separately because the
   bundle deliberately excludes it.
-- `books.rs` — the a-la-carte path, plus pagination and the `*Where` family.
+- `books.rs` — the a-la-carte path, plus pagination and the `*Where` family. `DeleteRoute`
+  is the one route written out rather than derived, to override `delete_response` (`404`
+  for a key matching no row, `204` otherwise); `authors.rs` and `reviews.rs` take the
+  default, `200` with the affected-row count.
 - `reviews.rs` — the composite-key path: two fields marked `#[sql_traits(primary_key)]`
   generate a named `ReviewPrimaryKey` struct, not a tuple.
 

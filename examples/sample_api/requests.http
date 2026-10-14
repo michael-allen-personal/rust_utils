@@ -125,7 +125,7 @@ GET {{host}}/authors/1/books
 GET {{host}}/authors/1/books/first
 
 ### Deletes the author created above (id 4), not a seeded one, so nothing later in this file
-# breaks.
+# breaks. DeleteRoute's default response: 200 with the affected-row count. Response body: 1.
 # @name authors_delete
 DELETE {{host}}/authors/4
 
@@ -238,7 +238,9 @@ Content-Type: application/json
   "genre": "Non-Fiction"
 }
 
-### Uses book 7, which nothing else in this file reads afterward.
+### Uses book 7, which nothing else in this file reads afterward. Book overrides
+# DeleteRoute::delete_response, so this answers a bare 204 — and a 404 if run a second time,
+# once the row is gone.
 # @name books_delete
 DELETE {{host}}/books/7
 
@@ -266,8 +268,7 @@ Content-Type: application/json
 GET {{host}}/books/1/reviews/page
 
 ### Book 2 has three reviews in the seed (ada, brian, dev) and is not read again later in
-# this file — DeleteRecordsWhereRoute serializes the count it matched, unlike DeleteRoute,
-# which discards it and answers 204. Response body: 3.
+# this file — DeleteRecordsWhereRoute serializes the count it matched. Response body: 3.
 # @name reviews_delete_where_book2
 DELETE {{host}}/books/2/reviews
 
@@ -301,6 +302,7 @@ Content-Type: application/json
   "rating": 5
 }
 
-### Deletes the row this file just replaced above (book 1 / brian).
+### Deletes the row this file just replaced above (book 1 / brian). The derived DeleteRoute
+# serializes the affected-row count. Response body: 1.
 # @name reviews_delete
 DELETE {{host}}/books/1/reviews/brian
