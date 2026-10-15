@@ -687,12 +687,12 @@ async fn an_unparseable_limit_is_a_400_in_this_crates_error_shape() {
     );
 }
 
-// --- The paginated *Where route ---------------------------------------------------------
+// --- The paginated *Filtered route ---------------------------------------------------------
 //
 // One request has to fill a path segment and a query string at once, which is the only thing
 // this route adds over the unfiltered one.
 
-/// The filter the route extracts from the path, serving as its own `WhereParams` through the
+/// The filter the route extracts from the path, serving as its own `FilterParams` through the
 /// blanket `From<T> for T`.
 #[derive(serde::Deserialize)]
 #[serde(crate = "axum_helpers::serde")]
@@ -704,14 +704,14 @@ struct OwnerFilter {
 /// paginated queries are a separate task, in `sql_traits`.
 #[async_trait]
 impl
-    axum_helpers::sql_traits::ListRecordsWherePaginated<
+    axum_helpers::sql_traits::ListRecordsFilteredPaginated<
         OwnerFilter,
         axum_helpers::sql_traits::OffsetParams,
     > for Widget
 {
-    async fn list_records_where_paginated(
+    async fn list_records_filtered_paginated(
         _pool: &Pool<Sqlite>,
-        where_params: OwnerFilter,
+        filter_params: OwnerFilter,
         params: axum_helpers::sql_traits::OffsetParams,
     ) -> Result<
         axum_helpers::sql_traits::Page<Self, axum_helpers::sql_traits::OffsetPagination>,
@@ -720,7 +720,7 @@ impl
         Ok(axum_helpers::sql_traits::Page {
             // The filter's value and the limit, both readable off the body.
             data: vec![Widget {
-                id: where_params.owner_id,
+                id: filter_params.owner_id,
                 name: params.limit.to_string(),
             }],
             pagination: axum_helpers::sql_traits::OffsetPagination {
@@ -733,12 +733,12 @@ impl
 }
 
 impl
-    axum_helpers::ListRecordsWherePaginatedRoute<
+    axum_helpers::ListRecordsFilteredPaginatedRoute<
         OwnerFilter,
         axum_helpers::OffsetParamsQuery<10, 25>,
     > for Widget
 {
-    type WhereParams = OwnerFilter;
+    type FilterParams = OwnerFilter;
 }
 
 async fn owner_paged(uri: &str) -> (StatusCode, String) {
@@ -750,10 +750,10 @@ async fn owner_paged(uri: &str) -> (StatusCode, String) {
         .route(
             "/owners/{owner_id}/widgets",
             axum_helpers::axum::routing::get(
-                <Widget as axum_helpers::ListRecordsWherePaginatedRoute<
+                <Widget as axum_helpers::ListRecordsFilteredPaginatedRoute<
                     OwnerFilter,
                     axum_helpers::OffsetParamsQuery<10, 25>,
-                >>::list_records_where_paginated_route,
+                >>::list_records_filtered_paginated_route,
             ),
         )
         .with_state(pool().await);
@@ -776,7 +776,7 @@ async fn owner_paged(uri: &str) -> (StatusCode, String) {
 }
 
 #[tokio::test]
-async fn a_paginated_where_route_binds_the_path_and_the_query_from_one_request() {
+async fn a_paginated_filtered_route_binds_the_path_and_the_query_from_one_request() {
     let (status, body) = owner_paged("/owners/7/widgets?limit=5").await;
 
     assert_eq!(status, StatusCode::OK);
@@ -787,7 +787,7 @@ async fn a_paginated_where_route_binds_the_path_and_the_query_from_one_request()
 }
 
 #[tokio::test]
-async fn a_paginated_where_route_still_defaults_the_limit() {
+async fn a_paginated_filtered_route_still_defaults_the_limit() {
     let (status, body) = owner_paged("/owners/7/widgets").await;
 
     assert_eq!(status, StatusCode::OK);
@@ -795,14 +795,14 @@ async fn a_paginated_where_route_still_defaults_the_limit() {
 }
 
 #[tokio::test]
-async fn a_paginated_where_route_rejects_an_over_max_limit() {
+async fn a_paginated_filtered_route_rejects_an_over_max_limit() {
     let (status, _) = owner_paged("/owners/7/widgets?limit=26").await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
-async fn a_paginated_where_route_will_not_let_the_query_override_the_path() {
+async fn a_paginated_filtered_route_will_not_let_the_query_override_the_path() {
     let (status, body) = owner_paged("/owners/7/widgets?owner_id=8&limit=5").await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -821,8 +821,10 @@ async fn a_paginated_where_route_will_not_let_the_query_override_the_path() {
 // since no URL-segment binding is under test here.
 
 use axum_helpers::axum::response::Response;
-use axum_helpers::sql_traits::{BulkInsertRecords, DeleteRecord, DeleteRecordsWhere, InsertRecord};
-use axum_helpers::{BulkCreateRoute, CreateRoute, DeleteRecordsWhereRoute, DeleteRoute};
+use axum_helpers::sql_traits::{
+    BulkInsertRecords, DeleteRecord, DeleteRecordsFiltered, InsertRecord,
+};
+use axum_helpers::{BulkCreateRoute, CreateRoute, DeleteRecordsFilteredRoute, DeleteRoute};
 
 /// The key the mutation fixtures treat as failing with a database error.
 const FAILING_ID: i64 = 500;
@@ -895,18 +897,18 @@ struct CountedFilter {
 }
 
 #[async_trait]
-impl DeleteRecordsWhere<CountedFilter> for Counted {
+impl DeleteRecordsFiltered<CountedFilter> for Counted {
     type ReturnType = ();
-    async fn delete_records_where(
+    async fn delete_records_filtered(
         _pool: &Pool<Sqlite>,
-        _where_params: CountedFilter,
+        _filter_params: CountedFilter,
     ) -> Result<(), sqlx::Error> {
         Ok(())
     }
 }
 
-impl DeleteRecordsWhereRoute<CountedFilter> for Counted {
-    type WhereParams = CountedFilter;
+impl DeleteRecordsFilteredRoute<CountedFilter> for Counted {
+    type FilterParams = CountedFilter;
 }
 
 /// The opposite shape: a delete and an insert that both return `()`.
@@ -1040,11 +1042,12 @@ async fn a_delete_returning_none_answers_204_not_404() {
 
 #[tokio::test]
 async fn a_filtered_delete_returning_unit_answers_204_not_200_null() {
-    let response = <Counted as DeleteRecordsWhereRoute<CountedFilter>>::delete_records_where_route(
-        State(pool().await),
-        PathAndQuery(CountedFilter { id: 1 }),
-    )
-    .await;
+    let response =
+        <Counted as DeleteRecordsFilteredRoute<CountedFilter>>::delete_records_filtered_route(
+            State(pool().await),
+            PathAndQuery(CountedFilter { id: 1 }),
+        )
+        .await;
 
     let (status, _, body) = rendered(response).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -1097,7 +1100,7 @@ async fn an_overridden_hook_never_sees_an_error() {
 
 // --- PathAndQuery ----------------------------------------------------------------------
 //
-// The extractor every `*WhereRoute` reads its filter through, driven here through a
+// The extractor every `*FilteredRoute` reads its filter through, driven here through a
 // hand-written handler that echoes what it extracted. Its subject is which source fills
 // which field, so a real `Router` is the only honest vantage point: it is what decides which
 // segments a request carries.

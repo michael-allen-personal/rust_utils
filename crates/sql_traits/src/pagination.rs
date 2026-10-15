@@ -147,14 +147,14 @@ where
 /// enforcement. The only difference is the filter, which narrows what is counted as well as
 /// what is returned.
 #[async_trait]
-pub trait ListRecordsWherePaginated<T, P>: Sized + HasDatabase
+pub trait ListRecordsFilteredPaginated<T, P>: Sized + HasDatabase
 where
     T: Send,
     P: PaginationParams + Send,
 {
-    async fn list_records_where_paginated(
+    async fn list_records_filtered_paginated(
         pool: &Pool<<Self as HasDatabase>::Database>,
-        where_params: T,
+        filter_params: T,
         params: P,
     ) -> Result<Page<Self, P::Pagination>, sqlx::Error>;
 }

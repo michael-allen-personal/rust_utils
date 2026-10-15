@@ -203,13 +203,13 @@ pub trait GetRecord: Sized + HasPrimaryKey + HasDatabase {
 
 /// Fetches a single record of this type from the database matching the given filter.
 #[async_trait]
-pub trait GetRecordWhere<T>: Sized + HasDatabase
+pub trait GetRecordFiltered<T>: Sized + HasDatabase
 where
     T: Send,
 {
-    async fn get_record_where(
+    async fn get_record_filtered(
         pool: &Pool<<Self as HasDatabase>::Database>,
-        where_params: T,
+        filter_params: T,
     ) -> Result<Option<Self>, sqlx::Error>;
 }
 
@@ -223,10 +223,10 @@ pub trait ListRecords: Sized + HasDatabase {
 
 /// Retrieves all records of this type from the database matching the given filter.
 #[async_trait]
-pub trait ListRecordsWhere<T>: Sized + HasDatabase {
-    async fn list_records_where(
+pub trait ListRecordsFiltered<T>: Sized + HasDatabase {
+    async fn list_records_filtered(
         pool: &Pool<<Self as HasDatabase>::Database>,
-        where_params: T,
+        filter_params: T,
     ) -> Result<Vec<Self>, sqlx::Error>;
 }
 
@@ -328,13 +328,13 @@ where
 
 /// Deletes all records of this type from the database matching the given filter.
 #[async_trait]
-pub trait DeleteRecordsWhere<T>: HasDatabase
+pub trait DeleteRecordsFiltered<T>: HasDatabase
 where
     T: Send,
 {
     type ReturnType: Sized;
-    async fn delete_records_where(
+    async fn delete_records_filtered(
         pool: &Pool<<Self as HasDatabase>::Database>,
-        where_params: T,
+        filter_params: T,
     ) -> Result<Self::ReturnType, sqlx::Error>;
 }

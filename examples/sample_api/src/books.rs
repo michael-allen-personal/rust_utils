@@ -6,7 +6,7 @@
 //! `HasDatabase` without the body-type generation — and the contrast with `authors.rs`,
 //! where the bundle's `POST` carries an explicit id, is the point of having both.
 //!
-//! Pagination and the `*Where` family are further down this file.
+//! Pagination and the `*Filtered` family are further down this file.
 
 use axum_helpers::async_trait::async_trait;
 use axum_helpers::axum::Router;
@@ -15,15 +15,15 @@ use axum_helpers::axum::response::{IntoResponse, Response};
 use axum_helpers::axum::routing::{get, post};
 use axum_helpers::serde;
 use axum_helpers::sql_traits::{
-    BulkInsertRecords, CursorPagination, CursorParams, DeleteRecord, GetRecord, GetRecordWhere,
-    InsertRecord, ListRecords, ListRecordsPaginated, ListRecordsWhere, OffsetPagination,
+    BulkInsertRecords, CursorPagination, CursorParams, DeleteRecord, GetRecord, GetRecordFiltered,
+    InsertRecord, ListRecords, ListRecordsFiltered, ListRecordsPaginated, OffsetPagination,
     OffsetParams, Page, ReplaceRecord, UpdateRecord,
 };
 use axum_helpers::sqlx::{self, Pool, QueryBuilder, Sqlite};
 use axum_helpers::{
     ApiError, BulkCreateRoute, CreateRoute, CursorParamsQuery, DefaultOffsetParamsQuery,
-    DeleteRoute, GetRecordRoute, GetRecordWhereRoute, ListRecordsPaginatedRoute, ListRecordsRoute,
-    ListRecordsWhereRoute, ReplaceRoute, UpdateRoute,
+    DeleteRoute, GetRecordFilteredRoute, GetRecordRoute, ListRecordsFilteredRoute,
+    ListRecordsPaginatedRoute, ListRecordsRoute, ReplaceRoute, UpdateRoute,
 };
 use generic_helpers::str_enum;
 
@@ -309,7 +309,7 @@ impl DeleteRoute for Book {
     }
 }
 
-// --- the *Where family ------------------------------------------------------------------
+// --- the *Filtered family ------------------------------------------------------------------
 
 /// The filter behind `/authors/{author_id}/books`: `author_id` from the path, `genre` and
 /// `published_after` from the query string, all read into this one type by
@@ -317,12 +317,12 @@ impl DeleteRoute for Book {
 /// below, not by anything here — `author_id` comes from the path only because the route names
 /// `{author_id}`, which also makes a `?author_id=` in the query a duplicate key and a `400`.
 ///
-/// It serves as its own `WhereParams` through the blanket `From<T> for T`, which is why
-/// `type WhereParams = BookFilter` below type-checks with no conversion written. `genre` takes
+/// It serves as its own `FilterParams` through the blanket `From<T> for T`, which is why
+/// `type FilterParams = BookFilter` below type-checks with no conversion written. `genre` takes
 /// every alias `Genre` does (`?genre=SciFi`), since its `try_from = "String"` is what a query
 /// value goes through too.
 ///
-/// The `*Where` traits have no derive: `WhereParams` has to be chosen by the implementor and
+/// The `*Filtered` traits have no derive: `FilterParams` has to be chosen by the implementor and
 /// cannot be inferred from the record, which is exactly why these four impls are written out.
 #[derive(serde::Deserialize)]
 #[serde(crate = "axum_helpers::serde")]
@@ -335,15 +335,15 @@ pub struct BookFilter {
 /// The `SELECT ... WHERE` both `BookFilter` impls share, with one clause per field that is
 /// present. The caller appends its own `ORDER BY` and `LIMIT`. A book with no
 /// `published_year` never matches `published_after`, since `NULL > ?` is not true.
-fn filtered_books(where_params: BookFilter) -> QueryBuilder<Sqlite> {
+fn filtered_books(filter_params: BookFilter) -> QueryBuilder<Sqlite> {
     let mut builder = QueryBuilder::<Sqlite>::new(
         "SELECT id, author_id, title, genre, published_year FROM book WHERE author_id = ",
     );
-    builder.push_bind(where_params.author_id);
-    if let Some(genre) = where_params.genre {
+    builder.push_bind(filter_params.author_id);
+    if let Some(genre) = filter_params.genre {
         builder.push(" AND genre = ").push_bind(genre.as_str());
     }
-    if let Some(published_after) = where_params.published_after {
+    if let Some(published_after) = filter_params.published_after {
         builder
             .push(" AND published_year > ")
             .push_bind(published_after);
@@ -352,29 +352,29 @@ fn filtered_books(where_params: BookFilter) -> QueryBuilder<Sqlite> {
 }
 
 #[async_trait]
-impl ListRecordsWhere<BookFilter> for Book {
-    async fn list_records_where(
+impl ListRecordsFiltered<BookFilter> for Book {
+    async fn list_records_filtered(
         pool: &Pool<Sqlite>,
-        where_params: BookFilter,
+        filter_params: BookFilter,
     ) -> Result<Vec<Self>, sqlx::Error> {
-        let mut builder = filtered_books(where_params);
+        let mut builder = filtered_books(filter_params);
         builder.push(" ORDER BY id");
         let rows = builder.build_query_as::<BookRow>().fetch_all(pool).await?;
         books_from_rows(rows)
     }
 }
 
-impl ListRecordsWhereRoute<BookFilter> for Book {
-    type WhereParams = BookFilter;
+impl ListRecordsFilteredRoute<BookFilter> for Book {
+    type FilterParams = BookFilter;
 }
 
 #[async_trait]
-impl GetRecordWhere<BookFilter> for Book {
-    async fn get_record_where(
+impl GetRecordFiltered<BookFilter> for Book {
+    async fn get_record_filtered(
         pool: &Pool<Sqlite>,
-        where_params: BookFilter,
+        filter_params: BookFilter,
     ) -> Result<Option<Self>, sqlx::Error> {
-        let mut builder = filtered_books(where_params);
+        let mut builder = filtered_books(filter_params);
         builder.push(" ORDER BY id LIMIT 1");
         let row = builder
             .build_query_as::<BookRow>()
@@ -384,8 +384,8 @@ impl GetRecordWhere<BookFilter> for Book {
     }
 }
 
-impl GetRecordWhereRoute<BookFilter> for Book {
-    type WhereParams = BookFilter;
+impl GetRecordFilteredRoute<BookFilter> for Book {
+    type FilterParams = BookFilter;
 }
 
 // --- pagination, both modes -------------------------------------------------------------
@@ -520,10 +520,10 @@ pub fn routes() -> Router<Pool<Sqlite>> {
         )
         .route(
             "/authors/{author_id}/books",
-            get(<Book as ListRecordsWhereRoute<BookFilter>>::list_records_where_route),
+            get(<Book as ListRecordsFilteredRoute<BookFilter>>::list_records_filtered_route),
         )
         .route(
             "/authors/{author_id}/books/first",
-            get(<Book as GetRecordWhereRoute<BookFilter>>::get_record_where_route),
+            get(<Book as GetRecordFilteredRoute<BookFilter>>::get_record_filtered_route),
         )
 }

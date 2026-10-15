@@ -8,7 +8,7 @@ use crate::ApiError;
 
 /// Extracts `T` from the route's path segments and the request's query string merged into one
 /// set of keys, so one type can take `book_id` from `/books/{book_id}/reviews` and `min_rating`
-/// from `?min_rating=4`. Every `*WhereRoute` reads its filter through this; it is public so a
+/// from `?min_rating=4`. Every `*FilteredRoute` reads its filter through this; it is public so a
 /// hand-written handler can read a filter the same way.
 ///
 /// ```ignore

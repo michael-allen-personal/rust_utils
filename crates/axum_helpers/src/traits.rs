@@ -8,9 +8,9 @@ use serde::de::DeserializeOwned;
 use sqlx::Pool;
 
 use sql_traits::{
-    BulkInsertRecords, DeleteRecord, DeleteRecordsWhere, GetLatestRecord, GetRecord,
-    GetRecordWhere, HasDatabase, HasPrimaryKey, HasRequestBody, HasUpdateFields, InsertRecord,
-    ListRecords, ListRecordsPaginated, ListRecordsWhere, ListRecordsWherePaginated,
+    BulkInsertRecords, DeleteRecord, DeleteRecordsFiltered, GetLatestRecord, GetRecord,
+    GetRecordFiltered, HasDatabase, HasPrimaryKey, HasRequestBody, HasUpdateFields, InsertRecord,
+    ListRecords, ListRecordsFiltered, ListRecordsFilteredPaginated, ListRecordsPaginated,
     PaginationParams, ReplaceRecord, UpdateFields, UpdateRecord,
 };
 
@@ -137,19 +137,19 @@ where
 ///
 /// # Where the filter comes from
 ///
-/// `WhereParams` is read through [`PathAndQuery`]: the route's path segments and the query
+/// `FilterParams` is read through [`PathAndQuery`]: the route's path segments and the query
 /// string merged into one set of keys, so the route that mounts this handler decides which
-/// source supplies each field. A key in both is a `400`. `WhereParams` must be a struct with
+/// source supplies each field. A key in both is a `400`. `FilterParams` must be a struct with
 /// named fields; [`PathAndQuery`] documents the rest of what it can be.
 #[async_trait]
-pub trait GetRecordWhereRoute<T: Send>: GetRecordWhere<T> + serde::Serialize {
-    type WhereParams: Into<T> + DeserializeOwned + Send + 'static;
+pub trait GetRecordFilteredRoute<T: Send>: GetRecordFiltered<T> + serde::Serialize {
+    type FilterParams: Into<T> + DeserializeOwned + Send + 'static;
     // TODO: Add a function for logging
-    async fn get_record_where_route(
+    async fn get_record_filtered_route(
         State(pool): State<Pool<<Self as HasDatabase>::Database>>,
-        PathAndQuery(where_params): PathAndQuery<Self::WhereParams>,
+        PathAndQuery(filter_params): PathAndQuery<Self::FilterParams>,
     ) -> Response {
-        let result = Self::get_record_where(&pool, where_params.into())
+        let result = Self::get_record_filtered(&pool, filter_params.into())
             .await
             .map_err(ApiError::from);
         optional_record_response(result, not_found)
@@ -207,7 +207,7 @@ pub trait ListRecordsRoute: ListRecords + serde::Serialize {
 /// A type may implement this trait for an offset query type *and* a cursor one. Both impls then
 /// carry the same provided-method name, so a mount site disambiguates:
 /// `<Widget as ListRecordsPaginatedRoute<DefaultOffsetParamsQuery>>::list_records_paginated_route`.
-/// That is the existing situation for the `*Where` family, not a new one.
+/// That is the existing situation for the `*Filtered` family, not a new one.
 #[async_trait]
 pub trait ListRecordsPaginatedRoute<Q>: ListRecordsPaginated<Q::Params> + serde::Serialize
 where
@@ -240,19 +240,19 @@ where
 ///
 /// # Where the filter comes from
 ///
-/// `WhereParams` is read through [`PathAndQuery`]: the route's path segments and the query
+/// `FilterParams` is read through [`PathAndQuery`]: the route's path segments and the query
 /// string merged into one set of keys, so the route that mounts this handler decides which
-/// source supplies each field. A key in both is a `400`. `WhereParams` must be a struct with
+/// source supplies each field. A key in both is a `400`. `FilterParams` must be a struct with
 /// named fields; [`PathAndQuery`] documents the rest of what it can be.
 #[async_trait]
-pub trait ListRecordsWhereRoute<T: Send>: ListRecordsWhere<T> + serde::Serialize {
-    type WhereParams: Into<T> + DeserializeOwned + Send + 'static;
+pub trait ListRecordsFilteredRoute<T: Send>: ListRecordsFiltered<T> + serde::Serialize {
+    type FilterParams: Into<T> + DeserializeOwned + Send + 'static;
     // TODO: Add a function for logging
-    async fn list_records_where_route(
+    async fn list_records_filtered_route(
         State(pool): State<Pool<<Self as HasDatabase>::Database>>,
-        PathAndQuery(where_params): PathAndQuery<Self::WhereParams>,
+        PathAndQuery(filter_params): PathAndQuery<Self::FilterParams>,
     ) -> Response {
-        Self::list_records_where(&pool, where_params.into())
+        Self::list_records_filtered(&pool, filter_params.into())
             .await
             .map_err(ApiError::from)
             .map(|records| (StatusCode::OK, response::Json(records)))
@@ -272,32 +272,32 @@ pub trait ListRecordsWhereRoute<T: Send>: ListRecordsWhere<T> + serde::Serialize
 /// is rendered in this crate's error shape, and a type may implement the trait once per mode.
 ///
 /// The filter and the pagination parameters share the query string, and each ignores the
-/// other's keys: `?genre=SciFi&limit=5` fills `WhereParams` with `genre` and `Q` with `limit`.
-/// That only holds while `WhereParams` tolerates unknown fields, so a filter carrying
+/// other's keys: `?genre=SciFi&limit=5` fills `FilterParams` with `genre` and `Q` with `limit`.
+/// That only holds while `FilterParams` tolerates unknown fields, so a filter carrying
 /// `#[serde(deny_unknown_fields)]` rejects every paginated request.
 ///
-/// Like the rest of the `*Where` family, `WhereParams` has to be chosen by the implementor —
+/// Like the rest of the `*Filtered` family, `FilterParams` has to be chosen by the implementor —
 /// it cannot be inferred from the record — which is why no derive can emit this impl.
 ///
 /// # Where the filter comes from
 ///
-/// `WhereParams` is read through [`PathAndQuery`]: the route's path segments and the query
+/// `FilterParams` is read through [`PathAndQuery`]: the route's path segments and the query
 /// string merged into one set of keys, so the route that mounts this handler decides which
-/// source supplies each field. A key in both is a `400`. `WhereParams` must be a struct with
+/// source supplies each field. A key in both is a `400`. `FilterParams` must be a struct with
 /// named fields; [`PathAndQuery`] documents the rest of what it can be.
 #[async_trait]
-pub trait ListRecordsWherePaginatedRoute<T: Send, Q>:
-    ListRecordsWherePaginated<T, Q::Params> + serde::Serialize
+pub trait ListRecordsFilteredPaginatedRoute<T: Send, Q>:
+    ListRecordsFilteredPaginated<T, Q::Params> + serde::Serialize
 where
     Q: PaginationQuery,
     <Q::Params as PaginationParams>::Pagination: serde::Serialize,
 {
-    type WhereParams: Into<T> + DeserializeOwned + Send + 'static;
+    type FilterParams: Into<T> + DeserializeOwned + Send + 'static;
 
     // TODO: Add a function for logging
-    async fn list_records_where_paginated_route(
+    async fn list_records_filtered_paginated_route(
         State(pool): State<Pool<<Self as HasDatabase>::Database>>,
-        PathAndQuery(where_params): PathAndQuery<Self::WhereParams>,
+        PathAndQuery(filter_params): PathAndQuery<Self::FilterParams>,
         query: Result<Query<Q>, QueryRejection>,
     ) -> Response {
         let params = match validated_query(query) {
@@ -305,7 +305,7 @@ where
             Err(error) => return error.into_response(),
         };
 
-        Self::list_records_where_paginated(&pool, where_params.into(), params.into())
+        Self::list_records_filtered_paginated(&pool, filter_params.into(), params.into())
             .await
             .map_err(ApiError::from)
             .map(|page| (StatusCode::OK, response::Json(page)))
@@ -428,42 +428,42 @@ where
 /// Axum route handler for deleting records matching a filter taken from the URL path and query
 /// string.
 ///
-/// Returns `200 OK` with `DeleteRecordsWhere<T>::ReturnType` as JSON, so a caller can see what
+/// Returns `200 OK` with `DeleteRecordsFiltered<T>::ReturnType` as JSON, so a caller can see what
 /// the delete matched, or `204 No Content` when the `ReturnType` serializes to `null`.
-/// Override [`delete_records_where_response`](DeleteRecordsWhereRoute::delete_records_where_response)
+/// Override [`delete_records_filtered_response`](DeleteRecordsFilteredRoute::delete_records_filtered_response)
 /// to answer differently. A filter that cannot be filled is a `400` before anything is deleted.
 ///
 /// # Where the filter comes from
 ///
-/// `WhereParams` is read through [`PathAndQuery`]: the route's path segments and the query
+/// `FilterParams` is read through [`PathAndQuery`]: the route's path segments and the query
 /// string merged into one set of keys, so the route that mounts this handler decides which
-/// source supplies each field. A key in both is a `400`. `WhereParams` must be a struct with
+/// source supplies each field. A key in both is a `400`. `FilterParams` must be a struct with
 /// named fields; [`PathAndQuery`] documents the rest of what it can be.
 #[async_trait]
-pub trait DeleteRecordsWhereRoute<T: Send>: DeleteRecordsWhere<T>
+pub trait DeleteRecordsFilteredRoute<T: Send>: DeleteRecordsFiltered<T>
 where
-    <Self as DeleteRecordsWhere<T>>::ReturnType: serde::Serialize,
+    <Self as DeleteRecordsFiltered<T>>::ReturnType: serde::Serialize,
 {
-    type WhereParams: Into<T> + DeserializeOwned + Send + 'static;
+    type FilterParams: Into<T> + DeserializeOwned + Send + 'static;
 
     /// Renders a successful filtered delete. Only ever called with a success, like
     /// [`DeleteRoute::delete_response`].
     ///
     /// The default answers `200 OK` with `deleted` as JSON, or `204 No Content` when it
     /// serializes to `null`.
-    fn delete_records_where_response(
-        deleted: <Self as DeleteRecordsWhere<T>>::ReturnType,
+    fn delete_records_filtered_response(
+        deleted: <Self as DeleteRecordsFiltered<T>>::ReturnType,
     ) -> Response {
         mutation_response(deleted, StatusCode::OK, StatusCode::NO_CONTENT)
     }
 
     // TODO: Add a function for logging
-    async fn delete_records_where_route(
+    async fn delete_records_filtered_route(
         State(pool): State<Pool<<Self as HasDatabase>::Database>>,
-        PathAndQuery(where_params): PathAndQuery<Self::WhereParams>,
+        PathAndQuery(filter_params): PathAndQuery<Self::FilterParams>,
     ) -> Response {
-        match Self::delete_records_where(&pool, where_params.into()).await {
-            Ok(deleted) => Self::delete_records_where_response(deleted),
+        match Self::delete_records_filtered(&pool, filter_params.into()).await {
+            Ok(deleted) => Self::delete_records_filtered_response(deleted),
             Err(error) => ApiError::from(error).into_response(),
         }
     }

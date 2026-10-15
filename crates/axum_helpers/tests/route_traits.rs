@@ -3,12 +3,13 @@
 //! Implementing a route trait and *using* it are separate checks. A type can satisfy a
 //! route trait's bounds and still be rejected by `Router::route`, because that is where
 //! axum's `Handler` requirements are enforced: `DeserializeOwned` on whatever `Path` or
-//! `PathAndQuery` extracts, `IntoResponse` on the return, `Send + 'static` throughout. `v0.7.0` tightened
-//! several traits precisely because a bad impl compiled and only failed at the mount site
-//! with an opaque `Handler` error, so mounting is the check that matches the failure mode.
+//! `PathAndQuery` extracts, `IntoResponse` on the return, `Send + 'static` throughout.
+//! `v0.7.0` tightened several traits precisely because a bad impl compiled and only failed at
+//! the mount site with an opaque `Handler` error, so mounting is the check that matches the
+//! failure mode.
 //!
-//! This also covers the `*Where` family (`GetRecordWhereRoute`, `ListRecordsWhereRoute`,
-//! `DeleteRecordsWhereRoute`), which the derive macros cannot emit — their `WhereParams`
+//! This also covers the `*Filtered` family (`GetRecordFilteredRoute`, `ListRecordsFilteredRoute`,
+//! `DeleteRecordsFilteredRoute`), which the derive macros cannot emit — their `FilterParams`
 //! associated type has to be chosen by the implementor — and which therefore has no
 //! coverage from `derive_macros.rs`.
 //!
@@ -25,15 +26,16 @@ use axum_helpers::axum::{
     routing::{delete, get, patch, post, put},
 };
 use axum_helpers::sql_traits::{
-    BulkInsertRecords, DeleteRecord, DeleteRecordsWhere, GetLatestRecord, GetRecord,
-    GetRecordWhere, HasPrimaryKey, HasRequestBody, HasUpdateFields, InsertRecord, ListRecords,
-    ListRecordsWhere, ReplaceRecord, UpdateFields, UpdateRecord,
+    BulkInsertRecords, DeleteRecord, DeleteRecordsFiltered, GetLatestRecord, GetRecord,
+    GetRecordFiltered, HasPrimaryKey, HasRequestBody, HasUpdateFields, InsertRecord, ListRecords,
+    ListRecordsFiltered, ReplaceRecord, UpdateFields, UpdateRecord,
 };
 use axum_helpers::sqlx::{self, PgPool};
 use axum_helpers::{
-    BulkCreateRoute, CreateRoute, DeleteRecordsWhereRoute, DeleteRoute, GetLatestRoute,
-    GetRecordRoute, GetRecordWhereRoute, ListRecordsPaginatedRoute, ListRecordsRoute,
-    ListRecordsWherePaginatedRoute, ListRecordsWhereRoute, ReplaceRoute, UpdateRoute,
+    BulkCreateRoute, CreateRoute, DeleteRecordsFilteredRoute, DeleteRoute, GetLatestRoute,
+    GetRecordFilteredRoute, GetRecordRoute, ListRecordsFilteredPaginatedRoute,
+    ListRecordsFilteredRoute, ListRecordsPaginatedRoute, ListRecordsRoute, ReplaceRoute,
+    UpdateRoute,
 };
 
 /// The primary key the fixtures treat as matching no row.
@@ -49,9 +51,9 @@ struct Gadget {
     owner_id: i64,
 }
 
-/// The filter the `*Where` routes extract from the URL path and query string.
+/// The filter the `*Filtered` routes extract from the URL path and query string.
 /// `Into<GadgetFilter>` for itself comes from the blanket `From<T> for T`, so it can serve as
-/// its own `WhereParams`.
+/// its own `FilterParams`.
 #[derive(axum_helpers::serde::Deserialize)]
 #[serde(crate = "axum_helpers::serde")]
 struct GadgetFilter {
@@ -86,10 +88,10 @@ impl GetRecord for Gadget {
 }
 
 #[async_trait]
-impl GetRecordWhere<GadgetFilter> for Gadget {
-    async fn get_record_where(
+impl GetRecordFiltered<GadgetFilter> for Gadget {
+    async fn get_record_filtered(
         _pool: &PgPool,
-        _where_params: GadgetFilter,
+        _filter_params: GadgetFilter,
     ) -> Result<Option<Self>, sqlx::Error> {
         Ok(None)
     }
@@ -103,10 +105,10 @@ impl ListRecords for Gadget {
 }
 
 #[async_trait]
-impl ListRecordsWhere<GadgetFilter> for Gadget {
-    async fn list_records_where(
+impl ListRecordsFiltered<GadgetFilter> for Gadget {
+    async fn list_records_filtered(
         _pool: &PgPool,
-        _where_params: GadgetFilter,
+        _filter_params: GadgetFilter,
     ) -> Result<Vec<Self>, sqlx::Error> {
         Ok(Vec::new())
     }
@@ -142,14 +144,14 @@ impl DeleteRecord for Gadget {
     }
 }
 
-// A non-`()` `ReturnType` is the point of `DeleteRecordsWhere`: unlike `DeleteRecord`, whose
+// A non-`()` `ReturnType` is the point of `DeleteRecordsFiltered`: unlike `DeleteRecord`, whose
 // route throws the value away and answers `204`, this one serializes it into a `200` body.
 #[async_trait]
-impl DeleteRecordsWhere<GadgetFilter> for Gadget {
+impl DeleteRecordsFiltered<GadgetFilter> for Gadget {
     type ReturnType = u64;
-    async fn delete_records_where(
+    async fn delete_records_filtered(
         _pool: &PgPool,
-        _where_params: GadgetFilter,
+        _filter_params: GadgetFilter,
     ) -> Result<Self::ReturnType, sqlx::Error> {
         Ok(0)
     }
@@ -247,16 +249,16 @@ impl DeleteRoute for Gadget {}
 impl<'de> CreateRoute<'de> for Gadget {}
 impl<'de> BulkCreateRoute<'de> for Gadget {}
 
-impl GetRecordWhereRoute<GadgetFilter> for Gadget {
-    type WhereParams = GadgetFilter;
+impl GetRecordFilteredRoute<GadgetFilter> for Gadget {
+    type FilterParams = GadgetFilter;
 }
 
-impl ListRecordsWhereRoute<GadgetFilter> for Gadget {
-    type WhereParams = GadgetFilter;
+impl ListRecordsFilteredRoute<GadgetFilter> for Gadget {
+    type FilterParams = GadgetFilter;
 }
 
-impl DeleteRecordsWhereRoute<GadgetFilter> for Gadget {
-    type WhereParams = GadgetFilter;
+impl DeleteRecordsFilteredRoute<GadgetFilter> for Gadget {
+    type FilterParams = GadgetFilter;
 }
 
 // --- The paginated list family ---------------------------------------------------------
@@ -313,14 +315,14 @@ impl ListRecordsPaginatedRoute<axum_helpers::DefaultCursorParamsQuery<i64>> for 
 
 #[async_trait]
 impl
-    axum_helpers::sql_traits::ListRecordsWherePaginated<
+    axum_helpers::sql_traits::ListRecordsFilteredPaginated<
         GadgetFilter,
         axum_helpers::sql_traits::OffsetParams,
     > for Gadget
 {
-    async fn list_records_where_paginated(
+    async fn list_records_filtered_paginated(
         _pool: &PgPool,
-        _where_params: GadgetFilter,
+        _filter_params: GadgetFilter,
         params: axum_helpers::sql_traits::OffsetParams,
     ) -> Result<
         axum_helpers::sql_traits::Page<Self, axum_helpers::sql_traits::OffsetPagination>,
@@ -337,10 +339,10 @@ impl
     }
 }
 
-impl ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::DefaultOffsetParamsQuery>
+impl ListRecordsFilteredPaginatedRoute<GadgetFilter, axum_helpers::DefaultOffsetParamsQuery>
     for Gadget
 {
-    type WhereParams = GadgetFilter;
+    type FilterParams = GadgetFilter;
 }
 
 // The fourth combination: the filtered trait in cursor mode. Both route traits in both modes are
@@ -349,14 +351,14 @@ impl ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::DefaultOffsetPar
 // cursor one.
 #[async_trait]
 impl
-    axum_helpers::sql_traits::ListRecordsWherePaginated<
+    axum_helpers::sql_traits::ListRecordsFilteredPaginated<
         GadgetFilter,
         axum_helpers::sql_traits::CursorParams<i64>,
     > for Gadget
 {
-    async fn list_records_where_paginated(
+    async fn list_records_filtered_paginated(
         _pool: &PgPool,
-        _where_params: GadgetFilter,
+        _filter_params: GadgetFilter,
         params: axum_helpers::sql_traits::CursorParams<i64>,
     ) -> Result<
         axum_helpers::sql_traits::Page<Self, axum_helpers::sql_traits::CursorPagination<i64>>,
@@ -372,10 +374,10 @@ impl
     }
 }
 
-impl ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::DefaultCursorParamsQuery<i64>>
+impl ListRecordsFilteredPaginatedRoute<GadgetFilter, axum_helpers::DefaultCursorParamsQuery<i64>>
     for Gadget
 {
-    type WhereParams = GadgetFilter;
+    type FilterParams = GadgetFilter;
 }
 
 /// Every handler mounted on one router. If any of them stops satisfying axum's `Handler`
@@ -392,15 +394,15 @@ fn build_router() -> Router<PgPool> {
         .route("/gadgets/bulk", post(Gadget::bulk_create_route))
         .route(
             "/owners/{owner_id}/gadget",
-            get(<Gadget as GetRecordWhereRoute<GadgetFilter>>::get_record_where_route),
+            get(<Gadget as GetRecordFilteredRoute<GadgetFilter>>::get_record_filtered_route),
         )
         .route(
             "/owners/{owner_id}/gadgets",
-            get(<Gadget as ListRecordsWhereRoute<GadgetFilter>>::list_records_where_route),
+            get(<Gadget as ListRecordsFilteredRoute<GadgetFilter>>::list_records_filtered_route),
         )
         .route(
             "/owners/{owner_id}/gadgets",
-            delete(<Gadget as DeleteRecordsWhereRoute<GadgetFilter>>::delete_records_where_route),
+            delete(<Gadget as DeleteRecordsFilteredRoute<GadgetFilter>>::delete_records_filtered_route),
         )
         .route(
             "/gadgets/paged",
@@ -412,11 +414,11 @@ fn build_router() -> Router<PgPool> {
         )
         .route(
             "/owners/{owner_id}/gadgets/paged",
-            get(<Gadget as ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::DefaultOffsetParamsQuery>>::list_records_where_paginated_route),
+            get(<Gadget as ListRecordsFilteredPaginatedRoute<GadgetFilter, axum_helpers::DefaultOffsetParamsQuery>>::list_records_filtered_paginated_route),
         )
         .route(
             "/owners/{owner_id}/gadgets/streamed",
-            get(<Gadget as ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::DefaultCursorParamsQuery<i64>>>::list_records_where_paginated_route),
+            get(<Gadget as ListRecordsFilteredPaginatedRoute<GadgetFilter, axum_helpers::DefaultCursorParamsQuery<i64>>>::list_records_filtered_paginated_route),
         )
 }
 
@@ -472,10 +474,10 @@ impl ListRecords for Sprocket {
 }
 
 #[async_trait]
-impl ListRecordsWhere<SprocketFilter> for Sprocket {
-    async fn list_records_where(
+impl ListRecordsFiltered<SprocketFilter> for Sprocket {
+    async fn list_records_filtered(
         _pool: &Pool<Sqlite>,
-        _where_params: SprocketFilter,
+        _filter_params: SprocketFilter,
     ) -> Result<Vec<Self>, sqlx::Error> {
         Ok(Vec::new())
     }
@@ -483,8 +485,8 @@ impl ListRecordsWhere<SprocketFilter> for Sprocket {
 
 impl GetRecordRoute for Sprocket {}
 impl ListRecordsRoute for Sprocket {}
-impl ListRecordsWhereRoute<SprocketFilter> for Sprocket {
-    type WhereParams = SprocketFilter;
+impl ListRecordsFilteredRoute<SprocketFilter> for Sprocket {
+    type FilterParams = SprocketFilter;
 }
 
 /// Mounting is the check that matches the failure mode: a handler can satisfy its trait
@@ -497,6 +499,6 @@ fn sqlite_backed_handlers_mount_on_a_router() {
         .route("/sprockets", get(Sprocket::list_records_route))
         .route(
             "/sprockets/by-name",
-            get(Sprocket::list_records_where_route),
+            get(Sprocket::list_records_filtered_route),
         );
 }

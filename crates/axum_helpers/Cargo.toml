@@ -12,7 +12,7 @@ error_set = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # Fills `PathAndQuery` with the same parser axum's `Query` uses. Its error type is the source of
-# `ApiError::InvalidWhereParams`, so it is re-exported like every other leaked dependency.
+# `ApiError::InvalidFilterParams`, so it is re-exported like every other leaked dependency.
 serde_urlencoded = { workspace = true }
 sql_traits = { workspace = true }
 sqlx = { workspace = true }

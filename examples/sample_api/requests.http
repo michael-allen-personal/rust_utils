@@ -115,7 +115,7 @@ Content-Type: application/json
 
 {}
 
-### Author 1's books (ids 1-5), via the *Where family — filtered list, not a path parameter
+### Author 1's books (ids 1-5), via the *Filtered family — filtered list, not a path parameter
 # on Book itself.
 # @name authors_books
 GET {{host}}/authors/1/books
@@ -290,13 +290,13 @@ Content-Type: application/json
 GET {{host}}/books/1/reviews/page
 
 ### Book 2 has three reviews in the seed (ada, brian, dev) and is not read again later in
-# this file — DeleteRecordsWhereRoute serializes the count it matched. Response body: 3.
-# @name reviews_delete_where_book2
+# this file — DeleteRecordsFilteredRoute serializes the count it matched. Response body: 3.
+# @name reviews_delete_filtered_book2
 DELETE {{host}}/books/2/reviews
 
 ### Book 3 has no reviews in the seed, so this is a legitimate zero-affected-rows delete
 # rather than an error — the response body reports a count of 0.
-# @name reviews_delete_where
+# @name reviews_delete_filtered
 DELETE {{host}}/books/3/reviews
 
 ### The path segments (book_id, reviewer) are named after ReviewPrimaryKey's fields and bind

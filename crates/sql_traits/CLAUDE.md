@@ -162,7 +162,7 @@ Keep new fetch-one traits on that convention.
 
 ## Pagination is two traits, because the mode is a type parameter
 
-`ListRecordsPaginated<P>` and `ListRecordsWherePaginated<T, P>` take the validated parameters
+`ListRecordsPaginated<P>` and `ListRecordsFilteredPaginated<T, P>` take the validated parameters
 as `P`, so offset and cursor mode are the same trait at `OffsetParams` and `CursorParams<C>`
 rather than four traits. `P::Pagination` is what the response carries, which is what lets one
 `axum_helpers` handler serve every mode: the metadata comes back from the query, and HTTP code
@@ -226,16 +226,16 @@ Six crates under `tests/`, each proving something the others cannot:
 - `database_generic.rs` — every pool-taking trait implemented against SQLite rather than
   Postgres, purely to prove the traits and their `Pool<<Self as HasDatabase>::Database>`
   signatures are not secretly tied to one driver. All thirteen appear in this one file — the
-  eleven at the crate root plus `ListRecordsPaginated`/`ListRecordsWherePaginated` from
+  eleven at the crate root plus `ListRecordsPaginated`/`ListRecordsFilteredPaginated` from
   `pagination.rs`, one at `OffsetParams` and the other at `CursorParams<i64>` so both
-  pagination modes are exercised — with a `WidgetFilter` standing in for a `*Where` clause
+  pagination modes are exercised — with a `WidgetFilter` standing in for a `*Filtered` clause
   and `sql_traits::Update` supplying the `HasUpdateFields`/`UpdateFields` pair `UpdateRecord`
   needs. Nothing here connects: these are compile-time assertions, and `pagination.rs` and
   `axum_helpers/tests/route_responses.rs` are where real queries run.
 - `pagination.rs` — the envelope's JSON wire shape through this crate's own re-exported
   `serde`: one outer shape for both modes, the cursor keeping its own JSON type rather than
   being stringified. A `Widget` fixture proves `ListRecordsPaginated` and
-  `ListRecordsWherePaginated` are implementable from outside the crate as a compile-time
+  `ListRecordsFilteredPaginated` are implementable from outside the crate as a compile-time
   assertion — no rows, nothing awaited — and a second fixture, `Entry`, runs real queries
   against a real in-memory SQLite database to exercise the contract a fake impl cannot be
   held to: a cursor's total order, `next` coming from a `limit + 1` fetch, and `total` being

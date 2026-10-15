@@ -3,7 +3,7 @@
 A runnable axum application over an in-memory SQLite database, implementing every
 pool-taking `sql_traits` trait and every `axum_helpers` route trait — thirteen of each —
 once: `Author` for the `BasicCrudRoutes` bundle, `Book` for a-la-carte route derives plus
-both pagination modes and the `*Where` family, and `Review` for a composite primary key. It
+both pagination modes and the `*Filtered` family, and `Review` for a composite primary key. It
 is not a library and ships nothing anyone depends on.
 
 **It is two things at once: a manual test surface, and a compile check.** `cargo run -p
@@ -65,7 +65,7 @@ deriving `sql_traits::Record` actually exercise whether the dependency has to be
 - `authors.rs` — the batteries-included path. One `#[derive(axum_helpers::BasicCrudRoutes)]`
   implements seven route traits at once; `GetLatestRoute` is derived separately because the
   bundle deliberately excludes it.
-- `books.rs` — the a-la-carte path, plus pagination and the `*Where` family. `BookFilter`
+- `books.rs` — the a-la-carte path, plus pagination and the `*Filtered` family. `BookFilter`
   is the one filter drawing on both sources `PathAndQuery` merges: `author_id` from the path
   of `/authors/{author_id}/books`, and optional `genre`/`published_after` from the query
   string, so `requests.http` can show a filter narrowed, a key duplicated (`400`) and a value
