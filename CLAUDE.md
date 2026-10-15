@@ -148,5 +148,6 @@ subsections (`### Added` / `### Changed` / `### Removed`) and a **Breaking.** pr
 entries that require downstream edits. Entries here are long-form: they say what changed
 *and* why, and what a consumer has to do about it. Match that.
 
-Releases are tagged `vX.Y.Z` across the whole workspace; the per-crate `version` fields in
-`Cargo.toml` have all stayed at `0.1.0`.
+Releases are tagged `vX.Y.Z` across the whole workspace. The per-crate `version` fields in
+`Cargo.toml` stayed at `0.1.0` through `v0.7.0` and were bumped to `1.0.0` for `v1.0.0`; every
+crate in the workspace, `examples/sample_api` included, now tracks the release tag.

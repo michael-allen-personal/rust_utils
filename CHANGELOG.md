@@ -1,6 +1,229 @@
 # Changelog
 
-## Unreleased
+## v1.0.0
+
+### Upgrading from v0.7.0
+
+Each entry below says what it requires on its own; this is the same list in one place, in the
+order that keeps the compiler's errors readable.
+
+1. **Manifest.** Delete `macros` from `Cargo.toml`. Declare `sql_traits` alongside
+   `axum_helpers`, pinned to the same tag, and enable a driver feature on `axum_helpers`:
+   `features = ["postgres"]` (or `sqlite`, `mysql`, `any`). It forwards to `sql_traits`, so
+   that line needs one only if `sql_traits` is the only one of the two you depend on.
+2. **Derive paths.** `macros::{PrimaryKey, Record, Update, Database}` → `sql_traits::…`,
+   `macros::{*Route, BasicCrudRoutes}` → `axum_helpers::…`, `macros::MaxVecCapacity` →
+   `generic_helpers::MaxVecCapacity`, and `#[macros(` → `#[sql_traits(`.
+3. **`HasDatabase`.** Every type implementing a pool-taking SQL trait or a route trait adds
+   `#[derive(sql_traits::Database)]` with `#[sql_traits(database = Postgres)]`.
+4. **Renames.** `InsertSQL` → `InsertRecord`, `BulkInsertSQL` → `BulkInsertRecords`,
+   `DeleteSQL` → `DeleteRecord`, `ListRecords::get_all` → `list_records`,
+   `ListRecordsWhere::get_records` → `list_records_filtered`, then `Where` → `Filtered` and
+   `_where` → `_filtered` everywhere.
+5. **Filtered routes.** `type PathParams` → `type FilterParams`, as a struct with named fields.
+6. **Composite keys.** Tuple access on a composite primary key becomes field access.
+7. **`BasicCrudRoutes`.** Types deriving it also derive `sql_traits::Record` and
+   `sql_traits::Update` and implement `ReplaceRecord` and `UpdateRecord`.
+8. **`DeleteRoute`.** `DeleteRecord::ReturnType` must be `Serialize`.
+9. **`ApiError`.** An exhaustive `match` gains four arms: `InvalidPaginationLimit`,
+   `InvalidQueryParams`, `InvalidFilterParams`, `InvalidPathParams`.
+10. **Behaviour with no compile error.** Check create and delete response statuses, query keys
+    now filling filter fields, `#[serde(deny_unknown_fields)]` on filters, and `ApiError::Serde`
+    answering `500` — each described in its entry under Changed.
+
+### Added
+
+- `generic_helpers` crate, moved here from the `data-monorepo` repo (where it was
+  `common_parser`). Holds the `str_enum!` macro, `ParsingError`, and the
+  `buf_reader_from_path` / `MaxVecCapacity` file helpers. Its only external dependency is
+  `error_set`
+- `generic_helpers::MaxVecCapacity` derive macro, re-added now that the trait lives in this
+  workspace. It emits `impl ::generic_helpers::MaxVecCapacity for T {}` — an absolute path
+  through `generic_helpers`' root re-export, unlike the removed version's bare
+  `common_parser::` path
+- `str_enum!` generates `TryFrom<&str>` and `TryFrom<String>` alongside `FromStr`, so the
+  enums can be used from `#[serde(try_from = "String")]` and other `TryFrom`-bounded
+  positions that cannot reach `FromStr`. All three route through the same private
+  `accepts` matching, so aliases and case-insensitivity behave identically; the `String`
+  overload moves the input into the error on failure instead of allocating a second copy
+  of it
+- `sql_traits::HasRequestBody` and `sql_traits::RequestBody`: a pair of traits associating
+  a record with the request-body type holding every field except its primary key. The
+  record side is what route traits bind on; the body side makes the assembly reachable from
+  generic code holding only a body. `RequestBody::Record` is bound
+  `HasRequestBody<RequestBody = Self>`, so the pairing is mutual — a body can only name a
+  record that names it back, and the two sides cannot drift onto different types. That
+  bound also makes `with_key` a provided method: an implementor writes nothing but the
+  associated type
+- `#[derive(sql_traits::Record)]`: a superset of `PrimaryKey` that also generates `{Name}Body`
+  from the fields _not_ marked `#[sql_traits(primary_key)]`, both association impls, and both
+  `From` conversions — `From<(PrimaryKey, Body)> for Record` and `From<Record> for Body`.
+  Together those two make `record -> (key, body) -> record` expressible as a single
+  round-trip assertion, which is the test that catches a field reassembled into the wrong
+  slot. Name the body type's derives with `#[sql_traits(body_derive(...))]`: a derive macro
+  cannot see sibling `#[derive(...)]` attributes, since rustc strips them before it runs.
+  Every other attribute forwards to the body automatically, which is what keeps `serde` and
+  `ts-rs` renames from drifting between a record and its body. Named-field structs only.
+  A `#[sql_traits(...)]` attribute that is not a recognised directive — a typo, a stray
+  comma, `body_derive` in a non-list form, or a directive on the wrong item — is a
+  `compile_error!` naming what was found and what is accepted, rather than being ignored.
+  Ignoring it would be dangerous: a malformed `#[sql_traits(primary_key,)]` would drop the
+  field out of the key and _into_ the generated body, leaking the key into the request body
+- `sql_traits::HasUpdateFields` and `sql_traits::UpdateFields`: a pair of traits associating
+  a record with the type holding a _partial_ set of its non-key fields, mirroring
+  `HasRequestBody`/`RequestBody` exactly. `UpdateFields::Record` is bound
+  `HasUpdateFields<UpdateFields = Self>`, so the pairing is mutual and cannot drift, and
+  that bound makes `apply` a provided method — an implementor writes the associated type
+  and `is_empty`, nothing more. `apply` consumes the record and returns the updated one
+  rather than taking `&mut`, which keeps it chainable (`fields.apply(record)`) and matches
+  every other trait in the crate; none of them takes a mutable reference
+- `sql_traits::double_option`: the `deserialize_with` helper that keeps the three states of
+  a partial update apart over JSON. A plain derive on `Option<Option<T>>` collapses an
+  explicit `null` into the same `None` an absent key produces, which would silently turn
+  "clear this column" into "leave it alone". Public only because generated code has to name
+  it. `serde` is consequently a dependency of `sql_traits`, and is re-exported alongside
+  `sqlx` and `async_trait`
+- `#[derive(sql_traits::Update)]`: generates `{Name}Update` from the fields _not_ marked
+  `#[sql_traits(primary_key)]`, each wrapped in one more `Option` than the record has —
+  `String` becomes `Option<String>`, `Option<i32>` becomes `Option<Option<i32>>` — plus both
+  association impls. Name its derives with `#[sql_traits(update_derive(...))]`, the
+  counterpart to `body_derive`. A field whose type is syntactically `Option<..>` also gets
+  `#[serde(default, deserialize_with = "::sql_traits::double_option")]`, which is what makes
+  an explicit `null` clear the column. A type _alias_ for `Option<T>` cannot be recognized —
+  no proc macro can resolve one — and such a field simply loses the ability to be cleared;
+  it is never a type error, because the generated field type is correct either way.
+  Designed to sit alongside `#[derive(sql_traits::Record)]`, which is what supplies the
+  `HasPrimaryKey` impl that `HasUpdateFields` requires. Each derive reads only its own
+  struct-level directive and steps over the other's, since a derive macro cannot see its
+  siblings and this is the only way one struct can carry both lists: `Record` reads
+  `body_derive`, `Update` reads `update_derive`, and `PrimaryKey` reads neither but tolerates
+  `update_derive`, since `#[derive(PrimaryKey, Update)]` is a valid pairing. It still rejects
+  `body_derive`, which nothing on such a struct can ever read. A struct-level directive
+  written on a field is an error naming that directive
+- `sql_traits::ReplaceRecord` and `sql_traits::UpdateRecord`: the SQL side of a full and a
+  partial update by primary key. Both return `Result<Option<Self>, _>`, where `None` means no
+  row matched — the convention `GetRecord` already follows, and what lets the route traits
+  answer `404` instead of forcing an implementation to report `sqlx::Error::RowNotFound`,
+  which maps to a `500`. `UpdateRecord` takes `HasUpdateFields` as a supertrait rather than
+  declaring its own fields type, so the record/fields pair is the single source of truth for
+  what a partial update is and an implementation cannot pair a record with a fields type that
+  does not point back at it
+- `axum_helpers::ReplaceRoute` and a matching derive: a `PUT` handler taking the primary key
+  from the URL path and a key-less body from JSON, returning `200 OK` with the replaced
+  record, or `404 Not Found` if the key matches no row. Because the body type has no key
+  field, a generated OpenAPI schema omits the key from the request body without being told
+  to, while by default a client that sends one anyway still succeeds — serde ignores unknown
+  fields. That tolerance is serde's default, not a guarantee: a record carrying
+  `#[serde(deny_unknown_fields)]` forwards it to the generated body, which then rejects a
+  key-bearing payload with `422`. The attribute is deliberately not stripped — an explicit
+  opt-in to strictness is honoured
+- `axum_helpers::UpdateRoute` and a matching derive: a `PATCH` handler taking the primary key
+  from the URL path and a partial body from JSON, returning `200 OK` with the updated record,
+  `400 Bad Request` if the body sets no field at all, or `404 Not Found` if the key matches
+  no row. The empty-body check runs before the pool is touched: an update whose `SET` list is
+  built from the fields that are present has no statement to run when none of them are, which
+  left to the implementation is a SQL syntax error and a `500`. It also runs before the key is
+  looked up, so an empty body is a `400` whether or not the row exists
+- `sql_traits::Page`, `sql_traits::PaginationParams`, and the offset and cursor parameter and
+  metadata types, plus `sql_traits::ListRecordsPaginated<P>` and
+  `sql_traits::ListRecordsFilteredPaginated<T, P>`. Two traits rather than four, because the
+  pagination mode is the type parameter `P`: a record type offering both modes implements the
+  same trait at `OffsetParams` and at `CursorParams<C>`. `P::Pagination` is the metadata the
+  response carries, which is what lets one route handler serve every mode — a total or a next
+  cursor can only come from the query that fetched the rows, never from HTTP code afterwards.
+  `CursorPagination<C>` is generic over the cursor so `next` goes back out as the type that came
+  in, and an implementor whose cursor is a row id allocates nothing in either direction. `Page`,
+  `OffsetPagination` and `CursorPagination<C>` derive `Deserialize`, `PartialEq` and `Eq` as
+  well as `Serialize`, so a Rust client or an integration test can parse the envelope back into
+  the same types the handler sent and compare it with `assert_eq!`. Those derives generate
+  bounded impls and put no requirement on the record or metadata type: a `Serialize`-only record
+  still builds and serves a `Page`. The doc comments carry the four contracts the compiler
+  cannot: a cursor needs a total order, `next` comes from a `limit + 1` fetch, `total` is `Some`
+  iff the request asked, and no limit is enforced in this crate. For an impl whose cursor is
+  opaque, decoding belongs in the cursor type's own `Deserialize`, where a malformed cursor
+  becomes a query-string rejection and a `400` instead of the `500` every `sqlx::Error` maps to.
+  `ListRecords` and `ListRecordsFiltered<T>` are untouched — a consumer does nothing unless it
+  opts in
+- `axum_helpers::ListRecordsPaginatedRoute<Q>` and
+  `axum_helpers::ListRecordsFilteredPaginatedRoute<T, Q>`, with the query-string types
+  `OffsetParamsQuery<DEFAULT_LIMIT, MAX_LIMIT>` and `CursorParamsQuery<C, DEFAULT_LIMIT, MAX_LIMIT>`
+  and the `PaginationQuery` trait pairing each with the validated parameters it resolves to.
+  Pagination is a separate route trait rather than a mode of `ListRecordsRoute`, so a response is
+  never sometimes an array and sometimes an object: a type opts in by naming the trait, and then
+  every response is an envelope, empty pages included. **Neither const parameter has a
+  default**, so both numbers are always written together; the crate's own policy (50 per page,
+  200 at most) arrives under a name, `DefaultOffsetParamsQuery` and `DefaultCursorParamsQuery<C>`.
+  A default would make `OffsetParamsQuery<10>` legal, which reads as "cap this route at 10" but
+  would mean a default of 10 under the inherited maximum of 200. A transposed or zero-defaulted
+  `<DEFAULT, MAX>` pair fails as a post-monomorphization error: `cargo build` and `cargo test`
+  report it, and `cargo check` — or an editor running it — does not. Because each type carries
+  its own default, a route whose maximum sits below the crate-wide default still serves a request
+  that names no limit. The handlers extract `Result<Query<Q>, QueryRejection>` so an unparseable
+  query string answers `{"message": "..."}` like every other error here instead of axum's
+  plain-text default. The policy bounds page _size_ only: there is deliberately no ceiling on
+  `offset`, and a consumer who needs to bound how deep a request may page does it in their own
+  query
+- **Breaking.** `axum_helpers::ValidationError`, a new `error_set!` subset holding
+  `InvalidPaginationLimit { requested, max }`, which is also therefore a new `ApiError` variant.
+  `error_set!` generates a plain enum with no `#[non_exhaustive]`, so a consumer that matches
+  `ApiError` exhaustively must add an arm or a wildcard. It is a subset rather than inline
+  variants so `PaginationQuery::validate` returns only the error it can actually produce, and
+  the handler converts it with `ApiError::from`; the status decision stays in the single
+  `From<ApiError> for ApiErrorResponse` match where every other status is made
+- **Breaking.** `ApiError::InvalidQueryParams(axum::extract::rejection::QueryRejection)`, the
+  variant a query string axum could not deserialize arrives as — an unparseable `?limit=abc`, or
+  a cursor type whose own `Deserialize` rejected what it was handed. Another exhaustive `match`
+  on `ApiError` to update, for the same reason as above. It is inline on `ApiError` rather than
+  in `ValidationError` despite being the client's fault, and both reasons come from the source
+  type: `QueryRejection` is neither `PartialEq` nor `Eq`, so holding it would cost `ValidationError`
+  the derive its `assert_eq!` assertions depend on, and no validation function can _produce_ one
+  — it arrives already formed from the extractor — so putting it in the subset would widen
+  `PaginationQuery::validate`'s return type to something it can never return. The client gets
+  exactly the words axum would have sent as plain text, wrapped in this crate's
+  `{"message": "..."}` object
+- `IntoResponse` and `Into<ApiErrorResponse>` for `axum_helpers::IOError` and
+  `axum_helpers::ValidationError`, so a consumer's handler can return the narrow error it actually
+  produces and have it render itself, rather than widening to `ApiError` by hand at every call
+  site. Both route through `From<ApiError>`, so a subset and the whole cannot answer different
+  statuses for the same variant
+- `sql_traits::HasDatabase`, associating a record with the one database its queries run
+  against. The database travels as an associated type rather than a parameter on each
+  trait, which is what keeps every trait's parameter list and every axum mount site
+  unchanged: a record names its database once and the thirteen pool-taking traits follow
+  it. It is deliberately not a supertrait of `HasPrimaryKey` — the key, request-body and
+  update-fields machinery never touches a pool and stays database-agnostic
+- `#[derive(sql_traits::Database)]`, reading `#[sql_traits(database = Sqlite)]` and emitting
+  the `HasDatabase` impl. Standalone rather than folded into `Record`, so a hand-written record
+  and a separate insert-side type can both use it. The directive is required; its absence
+  is a compile error naming the accepted set (`Postgres`, `Sqlite`, `MySql`, `Any`) rather
+  than a silent default
+- Driver features on `sql_traits` and `axum_helpers` (`postgres`, `sqlite`, `mysql`,
+  `any`), forwarding to `sqlx`. They exist so a consumer can pick a driver while still
+  depending on the re-exported `sqlx` rather than declaring it themselves
+- **Sample API (`examples/sample_api`).** A runnable axum application over an in-memory
+  SQLite database that implements every pool-taking `sql_traits` trait and every
+  `axum_helpers` route trait (thirteen of each): `Author` for the `BasicCrudRoutes` bundle,
+  `Book` for a-la-carte route derives, both pagination modes and the `*Filtered` family, and
+  `Review` for a composite primary key. It exists so a change to these crates can be
+  exercised over real HTTP — `cargo run -p sample_api`, then the requests in
+  `examples/sample_api/requests.http` — instead of publishing a version and updating a
+  downstream project.
+
+  It also acts as a fifth consumer-perspective compile check. Like the `tests/` crates, it
+  reaches `axum`, `serde`, `sqlx` and `sql_traits` only through `axum_helpers`' re-exports,
+  so a re-export that stops being sufficient to write a real application breaks the
+  workspace build rather than surfacing in a consumer's repo.
+
+  Additive: no existing crate changed, and consumers need do nothing.
+
+- `axum_helpers::PathAndQuery<T>`: an axum extractor filling one `T` from the route's path
+  segments and the query string together, the extractor every `*FilteredRoute` now reads its
+  filter through. It is public so a hand-written handler can read a filter exactly the way the
+  route traits do, with the same duplicate-key `400` and the same error shape — it rejects with
+  `ApiError`. The path segments are re-encoded and parsed alongside the raw query by
+  `serde_urlencoded`, the parser behind axum's own `Query`, so a field parses identically under
+  either extractor. `serde_urlencoded` is re-exported as `axum_helpers::serde_urlencoded`, since
+  its error type is the source of `ApiError::InvalidFilterParams`.
 
 ### Changed
 
@@ -127,233 +350,21 @@
     rejects `limit`, `offset` and `cursor`; drop the attribute from a filter that shares a query
     string with anything else. A `match` over `ApiError` gains two variants.
 
-### Added
-
-- `generic_helpers` crate, moved here from the `data-monorepo` repo (where it was
-  `common_parser`). Holds the `str_enum!` macro, `ParsingError`, and the
-  `buf_reader_from_path` / `MaxVecCapacity` file helpers. One dependency (`error_set`)
-- `MaxVecCapacity` derive macro, re-added now that the trait lives in this workspace.
-  It emits `impl ::generic_helpers::MaxVecCapacity for T {}` — an absolute path through
-  `generic_helpers`' root re-export, unlike the removed version's bare `common_parser::`
-  path. `generic_helpers/tests/derive_macros.rs` is a consumer-perspective compile test
-  that fails if the emitted path stops resolving from outside the crate
-- `str_enum!` generates `TryFrom<&str>` and `TryFrom<String>` alongside `FromStr`, so the
-  enums can be used from `#[serde(try_from = "String")]` and other `TryFrom`-bounded
-  positions that cannot reach `FromStr`. All three route through the same private
-  `accepts` matching, so aliases and case-insensitivity behave identically; the `String`
-  overload moves the input into the error on failure instead of allocating a second copy
-  of it
-- `sql_traits::HasRequestBody` and `sql_traits::RequestBody`: a pair of traits associating
-  a record with the request-body type holding every field except its primary key. The
-  record side is what route traits bind on; the body side makes the assembly reachable from
-  generic code holding only a body. `RequestBody::Record` is bound
-  `HasRequestBody<RequestBody = Self>`, so the pairing is mutual — a body can only name a
-  record that names it back, and the two sides cannot drift onto different types. That
-  bound also makes `with_key` a provided method: an implementor writes nothing but the
-  associated type
-- `#[derive(macros::Record)]`: a superset of `PrimaryKey` that also generates `{Name}Body`
-  from the fields _not_ marked `#[macros(primary_key)]`, both association impls, and both
-  `From` conversions — `From<(PrimaryKey, Body)> for Record` and `From<Record> for Body`.
-  Together those two make `record -> (key, body) -> record` expressible as a single
-  round-trip assertion, which is the test that catches a field reassembled into the wrong
-  slot. Name the body type's derives with `#[macros(body_derive(...))]`: a derive macro
-  cannot see sibling `#[derive(...)]` attributes, since rustc strips them before it runs.
-  Every other attribute forwards to the body automatically, which is what keeps `serde` and
-  `ts-rs` renames from drifting between a record and its body. Named-field structs only.
-  A `#[macros(...)]` attribute that is not one of those two directives — a typo, a stray
-  comma, `body_derive` in a non-list form, or a directive on the wrong item — is a
-  `compile_error!` naming what was found and what is accepted, rather than being ignored.
-  Silence there was dangerous: a malformed `#[macros(primary_key,)]` used to demote the
-  field out of the key and _into_ the generated body, leaking the key into the request body
-- `sql_traits::HasUpdateFields` and `sql_traits::UpdateFields`: a pair of traits associating
-  a record with the type holding a _partial_ set of its non-key fields, mirroring
-  `HasRequestBody`/`RequestBody` exactly. `UpdateFields::Record` is bound
-  `HasUpdateFields<UpdateFields = Self>`, so the pairing is mutual and cannot drift, and
-  that bound makes `apply` a provided method — an implementor writes the associated type
-  and `is_empty`, nothing more. `apply` consumes the record and returns the updated one
-  rather than taking `&mut`, which keeps it chainable (`fields.apply(record)`) and matches
-  every other trait in the crate; none of them takes a mutable reference
-- `sql_traits::double_option`: the `deserialize_with` helper that keeps the three states of
-  a partial update apart over JSON. A plain derive on `Option<Option<T>>` collapses an
-  explicit `null` into the same `None` an absent key produces, which would silently turn
-  "clear this column" into "leave it alone". Public only because generated code has to name
-  it. `serde` is consequently a dependency of `sql_traits`, and is re-exported alongside
-  `sqlx` and `async_trait`
-- `#[derive(macros::Update)]`: generates `{Name}Update` from the fields _not_ marked
-  `#[macros(primary_key)]`, each wrapped in one more `Option` than the record has — `String`
-  becomes `Option<String>`, `Option<i32>` becomes `Option<Option<i32>>` — plus both
-  association impls. Name its derives with `#[macros(update_derive(...))]`, the counterpart
-  to `body_derive`. A field whose type is syntactically `Option<..>` also gets
-  `#[serde(default, deserialize_with = "::sql_traits::double_option")]`, which is what makes
-  an explicit `null` clear the column. A type _alias_ for `Option<T>` cannot be recognized —
-  no proc macro can resolve one — and such a field simply loses the ability to be cleared;
-  it is never a type error, because the generated field type is correct either way.
-  Designed to sit alongside `#[derive(macros::Record)]`, which is what supplies the
-  `HasPrimaryKey` impl that `HasUpdateFields` requires
-- `axum_helpers::UpdateRoute` and a matching derive: a `PATCH` handler taking the primary key
-  from the URL path and a partial body from JSON, returning `200 OK` with the updated record,
-  `400 Bad Request` if the body sets no field at all, or `404 Not Found` if the key matches
-  no row. The empty-body check runs before the pool is touched: an update whose `SET` list is
-  built from the fields that are present has no statement to run when none of them are, which
-  left to the implementation is a SQL syntax error and a `500`. It also runs before the key is
-  looked up, so an empty body is a `400` whether or not the row exists. Bundled into
-  `BasicCrudRoutes`, which now covers every CRUD operation
-- `crates/axum_helpers/tests/route_responses.rs`: response-code assertions for the route
-  handlers, as opposed to the compile-and-mount checks the other test crates do. Its
-  `Widget` fixture runs against a real in-memory SQLite database, built fresh per test —
-  `sqlite::memory:` needs no server, only a real table to query, so a handler can still be
-  awaited and its status inspected without standing up a database. This is what caught the
-  replace handler answering `200` with a `null` body for a missing row
-- `axum_helpers::ReplaceRoute` and a matching derive: a `PUT` handler taking the primary key
-  from the URL path and a key-less body from JSON, returning `200 OK` with the replaced
-  record. Because the body type has no key field, a generated OpenAPI schema omits the key
-  from the request body without being told to, while by default a client that sends one
-  anyway still succeeds — serde ignores unknown fields. That tolerance is serde's default,
-  not a guarantee: a record carrying `#[serde(deny_unknown_fields)]` forwards it to the
-  generated body, which then rejects a key-bearing payload with `422`. The attribute is
-  deliberately not stripped — an explicit opt-in to strictness is honoured. Bundled into
-  `BasicCrudRoutes`, which now covers every CRUD operation
-- `sql_traits::Page`, `sql_traits::PaginationParams`, and the offset and cursor parameter and
-  metadata types, plus `sql_traits::ListRecordsPaginated<P>` and
-  `sql_traits::ListRecordsFilteredPaginated<T, P>`. Two traits rather than four, because the
-  pagination mode is the type parameter `P`: a record type offering both modes implements the
-  same trait at `OffsetParams` and at `CursorParams<C>`. `P::Pagination` is the metadata the
-  response carries, which is what lets one route handler serve every mode — a total or a next
-  cursor can only come from the query that fetched the rows, never from HTTP code afterwards.
-  `CursorPagination<C>` is generic over the cursor so `next` goes back out as the type that came
-  in, and an implementor whose cursor is a row id allocates nothing in either direction. `Page`,
-  `OffsetPagination` and `CursorPagination<C>` derive `Deserialize` as well as `Serialize`, so a
-  consumer writing a Rust client — or an integration test driving their own service over HTTP —
-  can parse the envelope back into the same types the handler sent, rather than hand-rolling a
-  mirror of it, and `PartialEq`/`Eq` so what was parsed back can be compared with `assert_eq!`
-  rather than field by field. None of those derives constrains the record or metadata type: a
-  derive generates a bounded impl, not a requirement on the struct, so `Page<T, M>` is comparable
-  _where_ `T` and `M` are and is otherwise an ordinary `Page`. A record that is `Serialize`-only
-  still builds one and still serves it on the way out, costing nothing for the added derives. The doc comments carry
-  the four contracts the compiler cannot: a cursor needs a total order, `next` comes from a
-  `limit + 1` fetch, `total` is `Some` iff the request asked, and no limit is enforced in this
-  crate — and, for an impl whose cursor is opaque, that decoding belongs in the cursor type's own
-  `Deserialize`, where a malformed cursor becomes a query-string rejection and a `400` instead of
-  the `500` every `sqlx::Error` maps to. `ListRecords` and `ListRecordsFiltered<T>` are untouched — a
-  consumer does nothing unless it opts in
-- `axum_helpers::ListRecordsPaginatedRoute<Q>` and
-  `axum_helpers::ListRecordsFilteredPaginatedRoute<T, Q>`, with the query-string types
-  `OffsetParamsQuery<DEFAULT_LIMIT, MAX_LIMIT>` and `CursorParamsQuery<C, DEFAULT_LIMIT, MAX_LIMIT>`
-  and the `PaginationQuery` trait pairing each with the validated parameters it resolves to.
-  Pagination is a separate route trait rather than a mode of `ListRecordsRoute`, so a response is
-  never sometimes an array and sometimes an object: a type opts in by naming the trait, and then
-  every response is an envelope, empty pages included. The limit policy is const generic rather
-  than a pair of associated consts because that keeps the query-to-params conversion an
-  infallible, total `From` — the default limit is stated exactly once, in `Default`, and
-  `validate` reads the maximum off the type instead of having it threaded in. **Neither const
-  parameter has a default**, so both numbers are always written together, and the crate's own
-  policy arrives under a name: `DefaultOffsetParamsQuery` and `DefaultCursorParamsQuery<C>`, both
-  50 per page and 200 at most. Parameter defaults would make _partial_ specification legal and
-  silently wrong — `OffsetParamsQuery<10>` reads as "cap this route at 10" and would mean a
-  default of 10 paired with the inherited maximum of 200, a route serving twenty times the
-  intended page size, with nothing incoherent for the policy assertion to catch. That is the same
-  positional-and-silently-wrong failure this workspace rejected tuple composite keys for, so the
-  named aliases are the only way to get the bare form. A transposed or zero-defaulted
-  `<DEFAULT, MAX>` pair fails to build, as a post-monomorphization error: `cargo build` and
-  `cargo test` report it, and `cargo check` — or an editor running it — does not, so it is caught
-  on a real build the way the rest of this workspace's generated-code failures are. `limit` is
-  consequently a plain `u16` rather than an `Option`: the container's `serde` default comes from
-  _this type's_ `Default`, so a type whose maximum sits below the crate-wide default still serves
-  a request that names no limit, which a crate-wide serde default could not. That attribute has to
-  name its path — a bare `#[serde(default)]` panics `serde_derive` on a const-generic struct —
-  which makes the struct and const parameter names load-bearing, as
-  `crates/axum_helpers/CLAUDE.md` records; removing the parameter defaults does not change those
-  strings. The handlers extract `Result<Query<Q>, QueryRejection>` so an unparseable query string
-  answers `{"message": "..."}` like every other error here instead of axum's plain-text default.
-  The policy bounds page _size_ only: there is deliberately no ceiling on `offset`, and a consumer
-  who needs to bound how deep a request may page does it in their own query
-- **Breaking.** `axum_helpers::ValidationError`, a new `error_set!` subset holding
-  `InvalidPaginationLimit { requested, max }`, which is also therefore a new `ApiError` variant.
-  `error_set!` generates a plain enum with no `#[non_exhaustive]`, so a consumer that matches
-  `ApiError` exhaustively must add an arm or a wildcard. It is a subset rather than inline
-  variants so `PaginationQuery::validate` returns only the error it can actually produce, and
-  the handler converts it with `ApiError::from`; the status decision stays in the single
-  `From<ApiError> for ApiErrorResponse` match where every other status is made
-- **Breaking.** `ApiError::InvalidQueryParams(axum::extract::rejection::QueryRejection)`, the
-  variant a query string axum could not deserialize arrives as — an unparseable `?limit=abc`, or
-  a cursor type whose own `Deserialize` rejected what it was handed. Another exhaustive `match`
-  on `ApiError` to update, for the same reason as above. It is inline on `ApiError` rather than
-  in `ValidationError` despite being the client's fault, and both reasons come from the source
-  type: `QueryRejection` is neither `PartialEq` nor `Eq`, so holding it would cost `ValidationError`
-  the derive its `assert_eq!` assertions depend on, and no validation function can _produce_ one
-  — it arrives already formed from the extractor — so putting it in the subset would widen
-  `PaginationQuery::validate`'s return type to something it can never return. What `ValidationError`
-  collects is therefore what validation produces, comparably, not everything the client caused.
-  The variant needs no arm of its own in `From<ApiError> for ApiErrorResponse`: `error_set`
-  renders an undecorated source variant as the source's own `Display`, and a `QueryRejection`'s
-  `Display` is by definition its `body_text()`, so the client gets exactly the words axum would
-  have sent as plain text, wrapped in this crate's `{"message": "..."}` object. `QueryRejection`
-  is `#[non_exhaustive]` and every variant is a `400` today; one carrying another status would
-  make that arm `FlexibleError(rejection.status(), rejection.body_text())`, so it is worth a look
-  on an axum upgrade
-- `IntoResponse` and `Into<ApiErrorResponse>` for `axum_helpers::IOError` and
-  `axum_helpers::ValidationError`, so a consumer's handler can return the narrow error it actually
-  produces and have it render itself, rather than widening to `ApiError` by hand at every call
-  site. Both route through `From<ApiError>`, so a subset and the whole cannot answer different
-  statuses for the same variant
-- `sql_traits::HasDatabase`, associating a record with the one database its queries run
-  against. The database travels as an associated type rather than a parameter on each
-  trait, which is what keeps every trait's parameter list and every axum mount site
-  unchanged: a record names its database once and the thirteen pool-taking traits follow
-  it. It is deliberately not a supertrait of `HasPrimaryKey` — the key, request-body and
-  update-fields machinery never touches a pool and stays database-agnostic
-- `macros::Database`, a derive reading `#[macros(database = Sqlite)]` and emitting the
-  `HasDatabase` impl. Standalone rather than folded into `Record`, so a hand-written record
-  and a separate insert-side type can both use it. The directive is required; its absence
-  is a compile error naming the accepted set (`Postgres`, `Sqlite`, `MySql`, `Any`) rather
-  than a silent default
-- Driver features on `sql_traits` and `axum_helpers` (`postgres`, `sqlite`, `mysql`,
-  `any`), forwarding to `sqlx`. They exist so a consumer can pick a driver while still
-  depending on the re-exported `sqlx` rather than declaring it themselves
-- **Sample API (`examples/sample_api`).** A runnable axum application over an in-memory
-  SQLite database that implements every pool-taking `sql_traits` trait and every
-  `axum_helpers` route trait (thirteen of each): `Author` for the `BasicCrudRoutes` bundle,
-  `Book` for a-la-carte route derives, both pagination modes and the `*Filtered` family, and
-  `Review` for a composite primary key. It exists so a change to these crates can be
-  exercised over real HTTP — `cargo run -p sample_api`, then the requests in
-  `examples/sample_api/requests.http` — instead of publishing a version and updating a
-  downstream project.
-
-  It also acts as a fifth consumer-perspective compile check. Like the `tests/` crates, it
-  reaches `axum`, `serde`, `sqlx` and `sql_traits` only through `axum_helpers`' re-exports,
-  so a re-export that stops being sufficient to write a real application breaks the
-  workspace build rather than surfacing in a consumer's repo.
-
-  Additive: no existing crate changed, and consumers need do nothing.
-
-- `axum_helpers::PathAndQuery<T>`: an axum extractor filling one `T` from the route's path
-  segments and the query string together, the extractor every `*FilteredRoute` now reads its
-  filter through. It is public so a hand-written handler can read a filter exactly the way the
-  route traits do, with the same duplicate-key `400` and the same error shape — it rejects with
-  `ApiError`. The path segments are re-encoded and parsed alongside the raw query by
-  `serde_urlencoded`, the parser behind axum's own `Query`, so a field parses identically under
-  either extractor. `serde_urlencoded` is re-exported as `axum_helpers::serde_urlencoded`, since
-  its error type is the source of `ApiError::InvalidFilterParams`.
-
-### Changed
-
 - **Breaking.** `ApiError::Serde` now renders a `500` rather than a `400`. It reads like the
   client's fault, which is why it was grouped with the bad requests, but no request this crate
   serves can reach that variant: a JSON body is deserialized by axum's `Json` extractor, which
   rejects with its own `400` before the handler is called, and a query string arrives as
   `ApiError::InvalidQueryParams`. What is left is the server failing to serialize a value of
-  its own, which the client can do nothing about and cannot fix by retrying differently. This
-  settles the standing TODO on the variant, which assumed it had to be split into a
-  deserialization `400` and a serialization `500` — the deserialization half never arrives, so
-  there is nothing to split. The status decision now follows `error_set` membership exactly:
-  every `IOError` variant is a `500`, and a variant that can be the client's fault belongs in
-  `ValidationError` or inline on `ApiError` instead. A consumer asserting `400` on a serde
-  failure, or funnelling its own deserialization errors through `ApiError::Serde` to get one,
-  has to change: raise the client-caused case as its own variant rather than reusing this one
+  its own, which the client can do nothing about and cannot fix by retrying differently. The
+  status decision now follows `error_set` membership exactly: every `IOError` variant is a
+  `500`, and a variant that can be the client's fault belongs in `ValidationError` or inline on
+  `ApiError` instead. A consumer asserting `400` on a serde failure, or funnelling its own
+  deserialization errors through `ApiError::Serde` to get one, has to change: raise the
+  client-caused case as its own variant rather than reusing this one
 - **Breaking.** A composite primary key is now a generated `{Name}PrimaryKey` struct rather
   than a tuple, so `axum::extract::Path` binds each URL segment **by name**. A tuple is
   filled from the segments left to right with no name matching, so a route declaring them in
-  a different order from the `#[macros(primary_key)]` fields — say
+  a different order from the `#[sql_traits(primary_key)]` fields — say
   `.route("/m/{group_id}/{user_id}", get(Membership::get_record_route))` on a
   `Membership { user_id, group_id }` — compiled, mounted, and ran while addressing the wrong
   row, with no error anywhere; `DeleteRoute` deleted it. Only the routes could see the
@@ -370,9 +381,9 @@
   `PrimaryKey` is still that field's own type, because a lone segment binds unambiguously
   and `Path<i64>` accepts a route whatever it names it. Migrating a composite key means
   replacing tuple access with field access: `let (a, b) = primary_key;` becomes
-  `primary_key.a` / `primary_key.b`, and a hand-written `impl GetRecord`/`DeleteRecord`/
-  `UpdateRecord` binding the tuple to SQL binds the named fields instead. The name
-  `{Name}PrimaryKey` is now reserved alongside `{Name}Body` and `{Name}Update`
+  `primary_key.a` / `primary_key.b`, and a hand-written `impl GetRecord`/`DeleteRecord`
+  binding the tuple to SQL binds the named fields instead. The name `{Name}PrimaryKey` is
+  reserved, alongside `{Name}Body` and `{Name}Update`
 - **Breaking.** A composite primary key on a _tuple_ struct is a compile error naming the
   shape that works, rather than falling back to the old positional binding. Unnamed fields
   give a path segment nothing to bind to, so it is the one place the bug above could not be
@@ -383,14 +394,17 @@
   `DeleteRecord::delete_record`, and the two list methods `ListRecords::get_all` and
   `ListRecordsWhere::get_records` to `list_records` and `list_records_filtered` (the trait itself
   is now `ListRecordsFiltered`; see the `*Where` → `*Filtered` rename above). Every trait in
-  `sql_traits` now pairs a `<Verb><Noun>` name with a method spelling the same words, which
-  `GetRecord`, `GetRecordFiltered`, `GetLatestRecord`, `DeleteRecordsFiltered`, `ReplaceRecord`, and
-  `UpdateRecord` already did — the `*SQL` suffix and the `get_*` list methods were the only
-  holdouts. Singular and plural now carry meaning as well: `InsertRecord` and `DeleteRecord`
-  address one row, `BulkInsertRecords` and `DeleteRecordsFiltered` address many. Both halves of
-  the rename fail loudly at the use site — a stale `impl InsertSQL for T` gets "cannot find
-  trait", a stale `t.insert_sql(&pool)` gets "no method named `insert_sql`" — and no retired
-  name is reused, so nothing can silently rebind to a different trait
+  `sql_traits` now pairs a `<Verb><Noun>` name with a method spelling the same words, as
+  `GetRecord` and `GetLatestRecord` already did — the `*SQL` suffix and the `get_*` list
+  methods were the only holdouts. Singular and plural now carry meaning as well: `InsertRecord`
+  and `DeleteRecord` address one row, `BulkInsertRecords` and `DeleteRecordsFiltered` address
+  many. Both halves of the rename fail loudly at the use site — a stale `impl InsertSQL for T`
+  gets "cannot find trait", a stale `t.insert_sql(&pool)` gets "no method named `insert_sql`" —
+  and no retired name is reused, so nothing can silently rebind to a different trait. The route
+  derives emit impls bounded on the new names, so a type deriving `BasicCrudRoutes`,
+  `CreateRoute`, `BulkCreateRoute` or `DeleteRoute` needs its SQL impls renamed to match; as
+  with any unmet supertrait, the error lands on the generated impl naming the trait it cannot
+  find, not on the derive
 - **Breaking.** `#[derive(BasicCrudRoutes)]` now emits `impl ReplaceRoute` and
   `impl UpdateRoute` alongside the five route impls it already emitted, so the bundle covers
   every CRUD operation rather than everything except update: create (`CreateRoute`,
@@ -403,39 +417,16 @@
   cannot find, not on the derive. `GetLatestRoute` stays excluded: "the most recent row" is a
   domain-specific query rather than a CRUD operation, and bundling it would force every
   deriving type to implement `GetLatestRecord`
-- **Breaking.** `sql_traits::ReplaceRecord::replace_record` returns `Result<Option<Self>, _>`
-  rather than `Result<Self, _>`, and `axum_helpers::ReplaceRoute` answers `404 Not Found`
-  when it gets `None` — the convention `GetRecordRoute` already followed. Previously a `PUT`
-  to a key matching no row forced the implementation to report `sqlx::Error::RowNotFound`,
-  which the error mapping turned into a `500`. Existing impls need `Ok(record)` changed to
-  `Ok(Some(record))`; the compiler names every one of them
-- **Breaking.** `sql_traits::UpdateRecord` takes `HasUpdateFields` as a supertrait instead of
-  declaring its own `type UpdateFields`, so the record/fields pair is the single source of
-  truth for what a partial update is and an implementation cannot pair a record with a fields
-  type that does not point back at it. Its return type gains the same `Option` as
-  `ReplaceRecord`, for the same reason. The trait was added earlier on this branch and has not
-  been released, so nothing downstream depends on the old shape
-- `#[macros(...)]` container directives are now routed by which derive reads them, rather than
-  each derive rejecting everything it does not consume. `Record` reads `body_derive` and steps
-  over `update_derive`; `Update` does the reverse; `PrimaryKey` reads neither but tolerates
-  `update_derive`, since `#[derive(PrimaryKey, Update)]` is a valid pairing. It still rejects
-  `body_derive`, which nothing on such a struct can ever read. A derive macro cannot see its
-  siblings, so this is the only way one struct can carry both lists. An unrecognized directive
-  is still a `compile_error!`, and a struct-level directive written on a field now names the
-  directive that was actually misplaced instead of listing every one it could have been
-- **Breaking.** The route derives emit impls bounded on the renamed traits, so a type deriving
-  `BasicCrudRoutes`, `CreateRoute`, `BulkCreateRoute`, or `DeleteRoute` needs its `InsertSQL`,
-  `BulkInsertSQL`, and `DeleteSQL` impls renamed to match. As with any unmet supertrait, the
-  error lands on the generated impl naming the trait it cannot find, not on the derive
 - **Breaking.** All thirteen pool-taking SQL traits and all thirteen route traits now take
   `Pool<<Self as HasDatabase>::Database>` in place of `PgPool`, and every type implementing
-  one must implement `HasDatabase`. Add `#[derive(macros::Database)]` with
-  `#[macros(database = Postgres)]` to each record, or write the three-line impl by hand.
+  one must implement `HasDatabase`. Add `#[derive(sql_traits::Database)]` with
+  `#[sql_traits(database = Postgres)]` to each record, or write the three-line impl by hand.
   Existing method bodies and signatures do not change: `Pool<Postgres>` *is* `PgPool`, so an
   impl written `async fn get_record(pool: &PgPool, ...)` still satisfies the new signature
   once its `Database` is `Postgres`
 - **Breaking.** Neither crate enables a `sqlx` driver any more, so a consumer must enable
-  one: `sql_traits = { ..., features = ["postgres"] }`, and likewise for `axum_helpers`.
+  one: `axum_helpers = { ..., features = ["postgres"] }`, which `axum_helpers` forwards to
+  `sql_traits`, or the same on `sql_traits` for a consumer that depends on it alone.
   Without it, nothing names a driver and `sqlx::Postgres` will not resolve. Note that cargo
   feature unification can mask this — if any other crate in your graph enables
   `sqlx/postgres`, the build may succeed until that dependency changes. Set the feature
