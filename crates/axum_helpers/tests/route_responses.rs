@@ -687,12 +687,12 @@ async fn an_unparseable_limit_is_a_400_in_this_crates_error_shape() {
     );
 }
 
-// --- The paginated *Where route ---------------------------------------------------------
+// --- The paginated *Filtered route ---------------------------------------------------------
 //
 // One request has to fill a path segment and a query string at once, which is the only thing
 // this route adds over the unfiltered one.
 
-/// The filter the route extracts from the path, serving as its own `PathParams` through the
+/// The filter the route extracts from the path, serving as its own `FilterParams` through the
 /// blanket `From<T> for T`.
 #[derive(serde::Deserialize)]
 #[serde(crate = "axum_helpers::serde")]
@@ -704,14 +704,14 @@ struct OwnerFilter {
 /// paginated queries are a separate task, in `sql_traits`.
 #[async_trait]
 impl
-    axum_helpers::sql_traits::ListRecordsWherePaginated<
+    axum_helpers::sql_traits::ListRecordsFilteredPaginated<
         OwnerFilter,
         axum_helpers::sql_traits::OffsetParams,
     > for Widget
 {
-    async fn list_records_where_paginated(
+    async fn list_records_filtered_paginated(
         _pool: &Pool<Sqlite>,
-        where_params: OwnerFilter,
+        filter_params: OwnerFilter,
         params: axum_helpers::sql_traits::OffsetParams,
     ) -> Result<
         axum_helpers::sql_traits::Page<Self, axum_helpers::sql_traits::OffsetPagination>,
@@ -720,7 +720,7 @@ impl
         Ok(axum_helpers::sql_traits::Page {
             // The filter's value and the limit, both readable off the body.
             data: vec![Widget {
-                id: where_params.owner_id,
+                id: filter_params.owner_id,
                 name: params.limit.to_string(),
             }],
             pagination: axum_helpers::sql_traits::OffsetPagination {
@@ -733,12 +733,12 @@ impl
 }
 
 impl
-    axum_helpers::ListRecordsWherePaginatedRoute<
+    axum_helpers::ListRecordsFilteredPaginatedRoute<
         OwnerFilter,
         axum_helpers::OffsetParamsQuery<10, 25>,
     > for Widget
 {
-    type PathParams = OwnerFilter;
+    type FilterParams = OwnerFilter;
 }
 
 async fn owner_paged(uri: &str) -> (StatusCode, String) {
@@ -750,10 +750,10 @@ async fn owner_paged(uri: &str) -> (StatusCode, String) {
         .route(
             "/owners/{owner_id}/widgets",
             axum_helpers::axum::routing::get(
-                <Widget as axum_helpers::ListRecordsWherePaginatedRoute<
+                <Widget as axum_helpers::ListRecordsFilteredPaginatedRoute<
                     OwnerFilter,
                     axum_helpers::OffsetParamsQuery<10, 25>,
-                >>::list_records_where_paginated_route,
+                >>::list_records_filtered_paginated_route,
             ),
         )
         .with_state(pool().await);
@@ -776,7 +776,7 @@ async fn owner_paged(uri: &str) -> (StatusCode, String) {
 }
 
 #[tokio::test]
-async fn a_paginated_where_route_binds_the_path_and_the_query_from_one_request() {
+async fn a_paginated_filtered_route_binds_the_path_and_the_query_from_one_request() {
     let (status, body) = owner_paged("/owners/7/widgets?limit=5").await;
 
     assert_eq!(status, StatusCode::OK);
@@ -787,7 +787,7 @@ async fn a_paginated_where_route_binds_the_path_and_the_query_from_one_request()
 }
 
 #[tokio::test]
-async fn a_paginated_where_route_still_defaults_the_limit() {
+async fn a_paginated_filtered_route_still_defaults_the_limit() {
     let (status, body) = owner_paged("/owners/7/widgets").await;
 
     assert_eq!(status, StatusCode::OK);
@@ -795,10 +795,21 @@ async fn a_paginated_where_route_still_defaults_the_limit() {
 }
 
 #[tokio::test]
-async fn a_paginated_where_route_rejects_an_over_max_limit() {
+async fn a_paginated_filtered_route_rejects_an_over_max_limit() {
     let (status, _) = owner_paged("/owners/7/widgets?limit=26").await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_paginated_filtered_route_will_not_let_the_query_override_the_path() {
+    let (status, body) = owner_paged("/owners/7/widgets?owner_id=8&limit=5").await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body.starts_with(r#"{"message":"#) && body.contains("duplicate field `owner_id`"),
+        "a key in both the path and the query must be rejected, not resolved, got {body}"
+    );
 }
 
 // --- Mutation responses ----------------------------------------------------------------
@@ -810,8 +821,10 @@ async fn a_paginated_where_route_rejects_an_over_max_limit() {
 // since no URL-segment binding is under test here.
 
 use axum_helpers::axum::response::Response;
-use axum_helpers::sql_traits::{BulkInsertRecords, DeleteRecord, DeleteRecordsWhere, InsertRecord};
-use axum_helpers::{BulkCreateRoute, CreateRoute, DeleteRecordsWhereRoute, DeleteRoute};
+use axum_helpers::sql_traits::{
+    BulkInsertRecords, DeleteRecord, DeleteRecordsFiltered, InsertRecord,
+};
+use axum_helpers::{BulkCreateRoute, CreateRoute, DeleteRecordsFilteredRoute, DeleteRoute};
 
 /// The key the mutation fixtures treat as failing with a database error.
 const FAILING_ID: i64 = 500;
@@ -884,18 +897,18 @@ struct CountedFilter {
 }
 
 #[async_trait]
-impl DeleteRecordsWhere<CountedFilter> for Counted {
+impl DeleteRecordsFiltered<CountedFilter> for Counted {
     type ReturnType = ();
-    async fn delete_records_where(
+    async fn delete_records_filtered(
         _pool: &Pool<Sqlite>,
-        _where_params: CountedFilter,
+        _filter_params: CountedFilter,
     ) -> Result<(), sqlx::Error> {
         Ok(())
     }
 }
 
-impl DeleteRecordsWhereRoute<CountedFilter> for Counted {
-    type PathParams = CountedFilter;
+impl DeleteRecordsFilteredRoute<CountedFilter> for Counted {
+    type FilterParams = CountedFilter;
 }
 
 /// The opposite shape: a delete and an insert that both return `()`.
@@ -1029,11 +1042,12 @@ async fn a_delete_returning_none_answers_204_not_404() {
 
 #[tokio::test]
 async fn a_filtered_delete_returning_unit_answers_204_not_200_null() {
-    let response = <Counted as DeleteRecordsWhereRoute<CountedFilter>>::delete_records_where_route(
-        State(pool().await),
-        Path(CountedFilter { id: 1 }),
-    )
-    .await;
+    let response =
+        <Counted as DeleteRecordsFilteredRoute<CountedFilter>>::delete_records_filtered_route(
+            State(pool().await),
+            PathAndQuery(CountedFilter { id: 1 }),
+        )
+        .await;
 
     let (status, _, body) = rendered(response).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -1082,4 +1096,142 @@ async fn an_overridden_hook_never_sees_an_error() {
     let (status, _, body) = rendered(response).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(body.contains(r#""message""#), "got {body}");
+}
+
+// --- PathAndQuery ----------------------------------------------------------------------
+//
+// The extractor every `*FilteredRoute` reads its filter through, driven here through a
+// hand-written handler that echoes what it extracted. Its subject is which source fills
+// which field, so a real `Router` is the only honest vantage point: it is what decides which
+// segments a request carries.
+
+use axum_helpers::PathAndQuery;
+
+/// `owner_id` is required and the other two are optional, so one fixture can show a
+/// required field filled from either source and an optional one left out.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(crate = "axum_helpers::serde")]
+struct Probe {
+    owner_id: i64,
+    colour: Option<String>,
+    size: Option<u8>,
+}
+
+/// A single string field, for checking what a path segment's value survives.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(crate = "axum_helpers::serde")]
+struct Named {
+    name: String,
+}
+
+async fn probe(uri: &str) -> (StatusCode, String) {
+    use axum_helpers::axum::Json;
+    use axum_helpers::axum::body::Body;
+    use axum_helpers::axum::http::Request;
+    use axum_helpers::axum::routing::get;
+    use tower::ServiceExt as _;
+
+    async fn echo_probe(PathAndQuery(probe): PathAndQuery<Probe>) -> Json<Probe> {
+        Json(probe)
+    }
+    async fn echo_named(PathAndQuery(named): PathAndQuery<Named>) -> Json<Named> {
+        Json(named)
+    }
+
+    let router = axum_helpers::axum::Router::new()
+        .route("/owners/{owner_id}/probes", get(echo_probe))
+        .route("/probes", get(echo_probe))
+        .route("/named/{name}", get(echo_named));
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .body(Body::empty())
+                .expect("a valid request"),
+        )
+        .await
+        .expect("the router is infallible");
+    let (status, _, body) = rendered(response).await;
+    (status, body)
+}
+
+#[tokio::test]
+async fn one_type_is_filled_from_the_path_and_the_query_together() {
+    let (status, body) = probe("/owners/7/probes?colour=red&size=3").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, r#"{"owner_id":7,"colour":"red","size":3}"#);
+}
+
+#[tokio::test]
+async fn an_absent_query_string_leaves_the_optional_fields_none() {
+    let (status, body) = probe("/owners/7/probes").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, r#"{"owner_id":7,"colour":null,"size":null}"#);
+}
+
+#[tokio::test]
+async fn a_route_with_no_segments_fills_everything_from_the_query() {
+    let (status, body) = probe("/probes?owner_id=3&colour=blue").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, r#"{"owner_id":3,"colour":"blue","size":null}"#);
+}
+
+#[tokio::test]
+async fn a_required_field_neither_source_supplies_is_a_400_in_this_crates_error_shape() {
+    let (status, body) = probe("/probes?colour=blue").await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body.starts_with(r#"{"message":"#) && body.contains("owner_id"),
+        "got {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_key_in_both_the_path_and_the_query_is_a_400_not_an_override() {
+    let (status, body) = probe("/owners/7/probes?owner_id=8").await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body.starts_with(r#"{"message":"#) && body.contains("duplicate field `owner_id`"),
+        "got {body}"
+    );
+}
+
+#[tokio::test]
+async fn an_unparseable_query_value_is_a_400_in_this_crates_error_shape() {
+    let (status, body) = probe("/owners/7/probes?size=big").await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.starts_with(r#"{"message":"#), "got {body}");
+}
+
+#[tokio::test]
+async fn an_unparseable_path_value_is_a_400_too() {
+    let (status, body) = probe("/owners/seven/probes").await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.starts_with(r#"{"message":"#), "got {body}");
+}
+
+/// The path segments are re-encoded before parsing, so the characters urlencoding gives a
+/// meaning to — `+`, a space, `&`, `=`, `%` — are the ones a lossy round trip would mangle.
+#[tokio::test]
+async fn a_path_segment_survives_the_re_encoding_exactly() {
+    let (status, body) = probe("/named/a+b%20c%26d=e%25f").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, r#"{"name":"a+b c&d=e%f"}"#);
+}
+
+#[tokio::test]
+async fn a_path_segment_that_is_not_utf8_is_a_400_in_this_crates_error_shape() {
+    let (status, body) = probe("/named/%FF").await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.starts_with(r#"{"message":"#), "got {body}");
 }

@@ -34,13 +34,31 @@
   then `#[macros(` to `#[sql_traits(`. No driver feature is needed on the `sql_traits` line —
   cargo unifies the one already set on `axum_helpers` onto the same compiled copy
 
-- **Breaking.** `CreateRoute`, `BulkCreateRoute`, `DeleteRoute` and `DeleteRecordsWhereRoute`
+- **Breaking.** The `*Where` traits are renamed `*Filtered` in both crates, along with their
+  methods: `GetRecordWhere` → `GetRecordFiltered`, `ListRecordsWhere` → `ListRecordsFiltered`,
+  `DeleteRecordsWhere` → `DeleteRecordsFiltered`, each route trait to the matching
+  `*FilteredRoute` (`GetRecordWhereRoute` → `GetRecordFilteredRoute`, and so on), and every
+  `*_where` / `*_where_route` method to `*_filtered` / `*_filtered_route`
+  (`get_record_where` → `get_record_filtered`, `delete_records_where_route` →
+  `delete_records_filtered_route`). The pagination traits and the `delete_records_filtered_response`
+  hook added in this release are spelled the new way from the start, and the methods' `where_params`
+  parameter is now `filter_params`. "Where" named the SQL clause an implementation happens to
+  write, while a consumer thinks of these as filtered fetches. That mattered more once the
+  filter could come from the query string (issue #23, below) and became the `FilterParams`
+  associated type. Each route trait still pairs one-to-one with its SQL trait. No retired name is
+  reused, so a stale `impl GetRecordWhere<F>` gets "cannot find trait" and a stale mount gets
+  "no function or associated item named `get_record_where_route`". To migrate, rename
+  `Where` → `Filtered` and `_where` → `_filtered` in trait names, method names and mount
+  sites. A find-and-replace on exactly those two substrings is safe, because neither one
+  occurs in Rust's `where` keyword.
+
+- **Breaking.** `CreateRoute`, `BulkCreateRoute`, `DeleteRoute` and `DeleteRecordsFilteredRoute`
   now decide whether to send a body from what their SQL trait's `ReturnType` serializes to.
   A value serializing to JSON `null` — `()`, a unit struct, `None` — answers `204 No Content`
   for a delete and a bodyless `201 Created` for a create; anything else answers `200`/`201`
   with the value as JSON. Each route renders that through a new provided hook,
   `create_response`, `bulk_create_response`, `delete_response` and
-  `delete_records_where_response`, which an impl overrides to answer differently. The hook is
+  `delete_records_filtered_response`, which an impl overrides to answer differently. The hook is
   only ever called with a success, so an override cannot change the `{"message": …}` error
   shape. (#11)
 
@@ -60,7 +78,7 @@
 
   - A `DeleteRecord` returning a value, such as a `u64` row count, answered `204` and now
     answers `200` with the value. To keep `204`, return `()` or override `delete_response`.
-  - A `DeleteRecordsWhere` returning `()` answered `200` with `null` and now answers `204`.
+  - A `DeleteRecordsFiltered` returning `()` answered `200` with `null` and now answers `204`.
   - An `InsertRecord` or `BulkInsertRecords` returning `()` answered `201` with `null` and
     now answers `201` with no body and no `Content-Type`.
   - A `ReturnType` of `Option<T>` returning `None` now gets the no-body status. It is never
@@ -69,6 +87,45 @@
 
   Clients that parsed the old `null` body, or that treated a delete's `204` as the only
   success, need checking along with the server.
+
+- **Breaking.** The `*Filtered` route traits — `GetRecordFilteredRoute`, `ListRecordsFilteredRoute`,
+  `ListRecordsFilteredPaginatedRoute` and `DeleteRecordsFilteredRoute` — now read their filter from
+  the URL path *and* the query string, and their associated type is renamed from `PathParams` to
+  `FilterParams`, since it no longer comes only from the path and "filter" is what it is to a
+  caller. The path segments and the query string are merged into one set of
+  keys and deserialized once, through the new `PathAndQuery` extractor, so one filter type can
+  take `book_id` from `/books/{book_id}/reviews` and `min_rating` from `?min_rating=4`, and a
+  route with no segments at all (`/books?genre=Fiction`) can be filtered purely from the query.
+  Which source fills a field is decided by the route a handler is mounted on, not by the type.
+
+  The reason is issue #23: filtering a `GET` from the query string is the common case, and the
+  family could only filter on what the path carried. No `sql_traits` change was needed — the
+  SQL traits already took an arbitrary filter `T` without knowing where it came from — so the
+  whole change is in where the route handler fills `T` from. Separate `PathParams` and
+  `QueryParams` types were considered and rejected: every impl would have named both, usually
+  one as `()`, and nearly every filter would have needed a hand-written
+  `From<(PathParams, QueryParams)>`. Merged, the common case stays
+  `type FilterParams = Filter;` with no conversion written.
+
+  A key supplied by both the path and the query is a `400` ("duplicate field"), never an
+  override, so a query cannot redirect a request away from the record its path addresses. A
+  filter that cannot be filled is a `400` in this crate's `{"message": …}` shape, through the
+  new `ApiError::InvalidFilterParams` (or `ApiError::InvalidPathParams`, for a path segment that
+  is not valid UTF-8).
+
+  To migrate:
+
+  - Rename `type PathParams = …;` to `type FilterParams = …;` in every `*FilteredRoute` impl.
+  - A `FilterParams` that was a bare scalar or a tuple (`type PathParams = i64;`) must become a
+    struct with named fields: there are no names to merge a positional value on. Its fields are
+    named after the route's segments, as a composite primary key's already are.
+  - Code that calls a `*Filtered` handler directly, rather than mounting it, passes
+    `PathAndQuery(filter)` where it passed `Path(filter)`.
+  - Behaviour changes silently in two places. A query key matching a filter field used to be
+    ignored and now fills it — or is a `400` if the path already bound it. And a filter marked
+    `#[serde(deny_unknown_fields)]` now sees the whole query string, so on a paginated route it
+    rejects `limit`, `offset` and `cursor`; drop the attribute from a filter that shares a query
+    string with anything else. A `match` over `ApiError` gains two variants.
 
 ### Added
 
@@ -158,7 +215,7 @@
   `BasicCrudRoutes`, which now covers every CRUD operation
 - `sql_traits::Page`, `sql_traits::PaginationParams`, and the offset and cursor parameter and
   metadata types, plus `sql_traits::ListRecordsPaginated<P>` and
-  `sql_traits::ListRecordsWherePaginated<T, P>`. Two traits rather than four, because the
+  `sql_traits::ListRecordsFilteredPaginated<T, P>`. Two traits rather than four, because the
   pagination mode is the type parameter `P`: a record type offering both modes implements the
   same trait at `OffsetParams` and at `CursorParams<C>`. `P::Pagination` is the metadata the
   response carries, which is what lets one route handler serve every mode — a total or a next
@@ -177,10 +234,10 @@
   `limit + 1` fetch, `total` is `Some` iff the request asked, and no limit is enforced in this
   crate — and, for an impl whose cursor is opaque, that decoding belongs in the cursor type's own
   `Deserialize`, where a malformed cursor becomes a query-string rejection and a `400` instead of
-  the `500` every `sqlx::Error` maps to. `ListRecords` and `ListRecordsWhere<T>` are untouched — a
+  the `500` every `sqlx::Error` maps to. `ListRecords` and `ListRecordsFiltered<T>` are untouched — a
   consumer does nothing unless it opts in
 - `axum_helpers::ListRecordsPaginatedRoute<Q>` and
-  `axum_helpers::ListRecordsWherePaginatedRoute<T, Q>`, with the query-string types
+  `axum_helpers::ListRecordsFilteredPaginatedRoute<T, Q>`, with the query-string types
   `OffsetParamsQuery<DEFAULT_LIMIT, MAX_LIMIT>` and `CursorParamsQuery<C, DEFAULT_LIMIT, MAX_LIMIT>`
   and the `PaginationQuery` trait pairing each with the validated parameters it resolves to.
   Pagination is a separate route trait rather than a mode of `ListRecordsRoute`, so a response is
@@ -256,7 +313,7 @@
 - **Sample API (`examples/sample_api`).** A runnable axum application over an in-memory
   SQLite database that implements every pool-taking `sql_traits` trait and every
   `axum_helpers` route trait (thirteen of each): `Author` for the `BasicCrudRoutes` bundle,
-  `Book` for a-la-carte route derives, both pagination modes and the `*Where` family, and
+  `Book` for a-la-carte route derives, both pagination modes and the `*Filtered` family, and
   `Review` for a composite primary key. It exists so a change to these crates can be
   exercised over real HTTP — `cargo run -p sample_api`, then the requests in
   `examples/sample_api/requests.http` — instead of publishing a version and updating a
@@ -268,6 +325,15 @@
   workspace build rather than surfacing in a consumer's repo.
 
   Additive: no existing crate changed, and consumers need do nothing.
+
+- `axum_helpers::PathAndQuery<T>`: an axum extractor filling one `T` from the route's path
+  segments and the query string together, the extractor every `*FilteredRoute` now reads its
+  filter through. It is public so a hand-written handler can read a filter exactly the way the
+  route traits do, with the same duplicate-key `400` and the same error shape — it rejects with
+  `ApiError`. The path segments are re-encoded and parsed alongside the raw query by
+  `serde_urlencoded`, the parser behind axum's own `Query`, so a field parses identically under
+  either extractor. `serde_urlencoded` is re-exported as `axum_helpers::serde_urlencoded`, since
+  its error type is the source of `ApiError::InvalidFilterParams`.
 
 ### Changed
 
@@ -315,12 +381,13 @@
   `InsertSQL::insert_sql` to `InsertRecord::insert_record`, `BulkInsertSQL::bulk_insert_sql`
   to `BulkInsertRecords::bulk_insert_records`, `DeleteSQL::delete_sql` to
   `DeleteRecord::delete_record`, and the two list methods `ListRecords::get_all` and
-  `ListRecordsWhere::get_records` to `list_records` and `list_records_where`. Every trait in
+  `ListRecordsWhere::get_records` to `list_records` and `list_records_filtered` (the trait itself
+  is now `ListRecordsFiltered`; see the `*Where` → `*Filtered` rename above). Every trait in
   `sql_traits` now pairs a `<Verb><Noun>` name with a method spelling the same words, which
-  `GetRecord`, `GetRecordWhere`, `GetLatestRecord`, `DeleteRecordsWhere`, `ReplaceRecord`, and
+  `GetRecord`, `GetRecordFiltered`, `GetLatestRecord`, `DeleteRecordsFiltered`, `ReplaceRecord`, and
   `UpdateRecord` already did — the `*SQL` suffix and the `get_*` list methods were the only
   holdouts. Singular and plural now carry meaning as well: `InsertRecord` and `DeleteRecord`
-  address one row, `BulkInsertRecords` and `DeleteRecordsWhere` address many. Both halves of
+  address one row, `BulkInsertRecords` and `DeleteRecordsFiltered` address many. Both halves of
   the rename fail loudly at the use site — a stale `impl InsertSQL for T` gets "cannot find
   trait", a stale `t.insert_sql(&pool)` gets "no method named `insert_sql`" — and no retired
   name is reused, so nothing can silently rebind to a different trait

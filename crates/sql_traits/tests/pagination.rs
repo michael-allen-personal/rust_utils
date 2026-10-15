@@ -126,9 +126,9 @@ fn the_last_page_has_no_next_cursor() {
 
 use sql_traits::async_trait::async_trait;
 use sql_traits::sqlx::{self, Pool, Sqlite};
-use sql_traits::{CursorParams, ListRecordsPaginated, ListRecordsWherePaginated, OffsetParams};
+use sql_traits::{CursorParams, ListRecordsFilteredPaginated, ListRecordsPaginated, OffsetParams};
 
-/// The filter a `*Where` implementation takes. Its contents do not matter here, which is why
+/// The filter a `*Filtered` implementation takes. Its contents do not matter here, which is why
 /// the field is never read.
 #[allow(dead_code)]
 struct WidgetFilter {
@@ -171,10 +171,10 @@ impl ListRecordsPaginated<CursorParams<i64>> for Widget {
 }
 
 #[async_trait]
-impl ListRecordsWherePaginated<WidgetFilter, OffsetParams> for Widget {
-    async fn list_records_where_paginated(
+impl ListRecordsFilteredPaginated<WidgetFilter, OffsetParams> for Widget {
+    async fn list_records_filtered_paginated(
         _pool: &Pool<Sqlite>,
-        _where_params: WidgetFilter,
+        _filter_params: WidgetFilter,
         params: OffsetParams,
     ) -> Result<Page<Self, OffsetPagination>, sqlx::Error> {
         Ok(Page {
@@ -195,7 +195,7 @@ fn the_paginated_traits_are_implementable_from_outside()
 where
     Widget: ListRecordsPaginated<OffsetParams>
         + ListRecordsPaginated<CursorParams<i64>>
-        + ListRecordsWherePaginated<WidgetFilter, OffsetParams>,
+        + ListRecordsFilteredPaginated<WidgetFilter, OffsetParams>,
 {
 }
 

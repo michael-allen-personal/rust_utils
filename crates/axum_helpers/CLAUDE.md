@@ -42,17 +42,20 @@ every deriving type to implement `GetLatestRecord`.
 | SQL trait | Route trait | Success | Empty result |
 |---|---|---|---|
 | `GetRecord` | `GetRecordRoute` | `200` + JSON | `404` |
-| `GetRecordWhere<T>` | `GetRecordWhereRoute<T>` | `200` + JSON | `404` |
+| `GetRecordFiltered<T>` | `GetRecordFilteredRoute<T>` | `200` + JSON | `404` |
 | `GetLatestRecord` | `GetLatestRoute` | `200` + JSON | `204` |
-| `ListRecords` / `ListRecordsWhere<T>` | `ListRecordsRoute` / `ListRecordsWhereRoute<T>` | `200` + array | — |
+| `ListRecords` / `ListRecordsFiltered<T>` | `ListRecordsRoute` / `ListRecordsFilteredRoute<T>` | `200` + array | — |
 | `ListRecordsPaginated<OffsetParams>` | `ListRecordsPaginatedRoute<OffsetParamsQuery<..>>` | `200` + envelope | — |
 | `ListRecordsPaginated<CursorParams<C>>` | `ListRecordsPaginatedRoute<CursorParamsQuery<C, ..>>` | `200` + envelope | — |
-| `ListRecordsWherePaginated<T, P>` | `ListRecordsWherePaginatedRoute<T, Q>` | `200` + envelope | — |
+| `ListRecordsFilteredPaginated<T, P>` | `ListRecordsFilteredPaginatedRoute<T, Q>` | `200` + envelope | — |
 | `InsertRecord` / `BulkInsertRecords` | `CreateRoute` / `BulkCreateRoute` | `201` + JSON | `201`, no body |
 | `ReplaceRecord` | `ReplaceRoute` | `200` + JSON | `404` |
 | `UpdateRecord` | `UpdateRoute` | `200` + JSON | `404`, or `400` if the body is empty |
 | `DeleteRecord` | `DeleteRoute` | `200` + JSON | `204` |
-| `DeleteRecordsWhere<T>` | `DeleteRecordsWhereRoute<T>` | `200` + JSON | `204` |
+| `DeleteRecordsFiltered<T>` | `DeleteRecordsFilteredRoute<T>` | `200` + JSON | `204` |
+
+Every `*Filtered` route also answers `400` when its filter cannot be filled from the path and query
+string — see **The `*Filtered` family** below.
 
 For the fetch routes "empty" means the query matched no row. For the four mutation routes it
 means the `ReturnType` serialized to JSON `null` — see **Mutation responses** below.
@@ -64,9 +67,9 @@ parameter — keep that the single place the decision is made.
 
 ## Mutation responses: the null rule, behind an overridable hook
 
-`CreateRoute`, `BulkCreateRoute`, `DeleteRoute` and `DeleteRecordsWhereRoute` each render
+`CreateRoute`, `BulkCreateRoute`, `DeleteRoute` and `DeleteRecordsFilteredRoute` each render
 their SQL trait's successful `ReturnType` through a provided, non-async hook —
-`create_response`, `bulk_create_response`, `delete_response`, `delete_records_where_response`.
+`create_response`, `bulk_create_response`, `delete_response`, `delete_records_filtered_response`.
 Every default calls the private `mutation_response`, which serializes the value once: bytes of
 exactly `null` (`()`, a unit struct, `None`) answer the route's "no body" status — `204` for a
 delete, a bodyless `201` for a create — and anything else answers `200`/`201` with those bytes
@@ -94,10 +97,11 @@ bound already was.
 
 ## Two things route traits enforce that are easy to lose
 
-**`DeserializeOwned` on anything extracted from the path.** Without it a type can satisfy the
-route trait and only fail at `Router::route`, with an opaque `Handler` error that never
-mentions `Deserialize`. v0.7.0 tightened these bounds for exactly that reason. Any new
-path-extracting trait needs the same bound.
+**`DeserializeOwned` on anything extracted from the path or query.** Without it a type can
+satisfy the route trait and only fail at `Router::route`, with an opaque `Handler` error that
+never mentions `Deserialize`. v0.7.0 tightened these bounds for exactly that reason. Any new
+extracting trait needs the same bound — `FilterParams` carries it although `PathAndQuery`'s own
+`FromRequestParts` impl would demand it anyway, so the failure lands on the impl, not the mount.
 
 **An empty update body is a `400`, checked before the pool is touched.** Left to the
 implementation, a dynamically built `UPDATE` with an empty `SET` list is a SQL syntax error
@@ -132,7 +136,7 @@ The envelope is also the only mechanism that serves both modes with one shape.
 A record type offering both modes has two impls of the same provided method, so its mount site
 needs a turbofish:
 `<Gadget as ListRecordsPaginatedRoute<DefaultOffsetParamsQuery>>::list_records_paginated_route`.
-That is the existing situation for the `*Where` family rather than a new problem, but it is what
+That is the existing situation for the `*Filtered` family rather than a new problem, but it is what
 offering both modes on one type costs at the router. `tests/route_traits.rs` mounts such a type,
 so the disambiguation itself is under test.
 
@@ -203,12 +207,54 @@ the fetch-one handlers. A new paginated handler calls it rather than repeating t
 It hands back an `ApiError` rather than a finished `Response`, so the rendering stays in
 `From<ApiError> for ApiErrorResponse` with every other error; see **Errors** below.
 
-## The `*Where` family has no derive
+## The `*Filtered` family reads its filter from the path and the query together
 
-`GetRecordWhereRoute`, `ListRecordsWhereRoute` and `DeleteRecordsWhereRoute` each declare a
-`PathParams` associated type bounded `Into<T>`, which has to be chosen by the implementor and
-cannot be inferred from the struct. They are therefore invisible to `axum_helpers_macros` and
-to `tests/derive_macros.rs`; `tests/route_traits.rs` is their only coverage.
+`GetRecordFilteredRoute`, `ListRecordsFilteredRoute`, `ListRecordsFilteredPaginatedRoute` and
+`DeleteRecordsFilteredRoute` each declare a `FilterParams` associated type bounded `Into<T>`, and
+extract it through `PathAndQuery<Self::FilterParams>`: the route's path segments and the query
+string merged into one set of keys and deserialized once. One filter type can therefore take
+`book_id` from `/books/{book_id}/reviews` and `min_rating` from `?min_rating=4`, and the same type
+mounted at `/reviews` takes both from the query. The route decides which source fills a field;
+the type does not. This answered issue #23, which asked how query parameters should mix with the
+path-only `PathParams` the family had before. No `sql_traits` change was needed: the SQL traits
+already take an arbitrary `T` and never knew where it came from.
+
+Decisions to keep:
+
+- **A key in both the path and the query is a `400`, never an override.** It falls out of
+  deserializing once — serde reports a duplicate field — and it is what stops a query from
+  redirecting a request away from the record the path addresses, wherever authorization was
+  decided on the path. `#[serde(flatten)]` loses the check (serde buffers flattened keys); the
+  extractor's doc comment says so.
+- **One merged type, not separate `PathParams` and `QueryParams`.** Two associated types made
+  every impl name both, usually as `()`, and pushed a hand-written `From<(Path, Query)>` onto
+  almost every filter, including a `From<((), Query)>` for a query-only route. Merged, the common
+  case is `type FilterParams = Filter;` with no conversion at all.
+- **The merge re-encodes the path segments and parses with `serde_urlencoded`.** That is the
+  parser behind axum's `Query`, so a field parses identically from `?x=` under either extractor.
+  Passing the pairs through serde's `MapDeserializer` instead cannot parse `"1990"` into an
+  `i32`, and a hand-written value deserializer would drift from `Query`'s rules. Only the
+  segments are re-encoded, and the round trip is exact because axum hands them over
+  percent-decoded; `route_responses.rs` checks it on a segment carrying `+`, a space, `&`, `=`
+  and `%`.
+- **`PathAndQuery` is public.** A hand-written handler can read a filter exactly the way the
+  `*Filtered` routes do, and the trait handlers stay the same shape they had with `Path`. It
+  rejects with `ApiError`, so its failures are in the `{"message": …}` shape without a `Result`
+  extractor in every handler. A route with no segments contributes an empty set rather than
+  failing: axum's router inserts its (empty) parameter list for every matched route, which is
+  what `RawPathParams` reads.
+- **"Filtered", not "Where", in every name.** The family was the `*Where` traits through v0.7.0,
+  named after the SQL clause. A consumer thinks of the type as a filter, not as a clause, so the
+  traits, the associated type (`FilterParams`) and the methods were all renamed together, across
+  both crates, keeping each route trait paired one-to-one with its `sql_traits` counterpart
+  (`GetRecordFiltered` ↔ `GetRecordFilteredRoute`).
+- **`FilterParams` must be a struct with named fields.** `Path` could bind a bare `i64` or a tuple
+  by position; a merge has only names to work with.
+
+The family still has no derive: `FilterParams` has to be chosen by the implementor and cannot be
+inferred from the struct. They are therefore invisible to `axum_helpers_macros` and to
+`tests/derive_macros.rs`; `tests/route_traits.rs` mounts every one and `tests/route_responses.rs`
+covers what `PathAndQuery` answers.
 
 ## Errors
 
@@ -226,6 +272,15 @@ TODO that assumed the variant had to be split into a deserialization `400` and a
 `500`; the deserialization half never arrives, so there is nothing to split. The rule that
 keeps it true is `IOError`'s membership: a variant that *can* be the client's fault goes in
 `ValidationError` or inline on `ApiError`, not here.
+
+`PathAndQuery` adds two inline variants, both client-caused and both arriving already formed
+from outside — the same reason `InvalidQueryParams` is inline rather than in `ValidationError`.
+`InvalidFilterParams(serde_urlencoded::de::Error)` is a filter that could not be filled (a missing,
+unparseable or duplicated field) and is a `400`. `InvalidPathParams(RawPathParamsRejection)` is
+the one variant with an arm that asks its source for the status: a segment that is not valid
+UTF-8 is a `400`, but the extractor used where no route matched is axum's `500`, a server bug, so
+the arm is `FlexibleError(rejection.status(), rejection.body_text())` rather than a fixed `400`.
+`serde_urlencoded` is re-exported because its error type is in a public variant.
 
 `ValidationError` is the validation subset: `InvalidPaginationLimit { requested, max }` today. It
 is a subset rather than inline `ApiError` variants so `PaginationQuery::validate` can return only
@@ -275,14 +330,17 @@ Four crates, deliberately split by what they can prove:
 - `route_traits.rs` — every handler mounted on a real `Router`. Implementing a route trait
   and mounting it are separate checks; `Router::route` is where axum's `Handler` requirements
   are actually enforced, and it is where the pre-v0.7.0 missing-`DeserializeOwned` bug
-  surfaced. This is also the only file covering the `*Where` family.
+  surfaced. This is also the only file covering the `*Filtered` family.
 - `route_responses.rs` — what handlers actually answer. `Widget`'s fixture runs against a
   real in-memory SQLite database built fresh per test, so its assertions hold for rows
   actually read from and written to a database; `Membership` and the paginated fixtures
   still fake their SQL impls, because their subject is axum's own extraction rather than the
   query. Driving a `Router` with a real request is the only way to exercise URL-segment
-  binding either way: calling a handler directly takes a `Path` built by hand, which proves
-  nothing about which segment filled which field.
+  binding either way: calling a handler directly takes a `Path` or `PathAndQuery` built by
+  hand, which proves nothing about which segment filled which field. Its `PathAndQuery`
+  section drives the extractor through a hand-written echo handler, so the merge, the
+  query-only route, the duplicate-key `400` and the re-encoding round trip are asserted on the
+  extracted value itself rather than through some impl's output.
 
 `axum_helpers_macros`' own tests are the opposite shape: unit tests in its `src/lib.rs`, the
 exception to that rule. They assert on the token strings the private `expand_*` functions

@@ -24,13 +24,13 @@ use axum_helpers::axum::Router;
 use axum_helpers::axum::routing::{delete, get, post};
 use axum_helpers::serde;
 use axum_helpers::sql_traits::{
-    DeleteRecord, DeleteRecordsWhere, GetRecord, InsertRecord, ListRecordsWherePaginated,
+    DeleteRecord, DeleteRecordsFiltered, GetRecord, InsertRecord, ListRecordsFilteredPaginated,
     OffsetPagination, OffsetParams, Page, ReplaceRecord, UpdateFields, UpdateRecord,
 };
 use axum_helpers::sqlx::{self, Pool, Sqlite};
 use axum_helpers::{
-    CreateRoute, DefaultOffsetParamsQuery, DeleteRecordsWhereRoute, DeleteRoute, GetRecordRoute,
-    ListRecordsWherePaginatedRoute, ReplaceRoute, UpdateRoute,
+    CreateRoute, DefaultOffsetParamsQuery, DeleteRecordsFilteredRoute, DeleteRoute, GetRecordRoute,
+    ListRecordsFilteredPaginatedRoute, ReplaceRoute, UpdateRoute,
 };
 
 /// The columns of `review`, in schema order.
@@ -157,8 +157,9 @@ impl DeleteRecord for Review {
     }
 }
 
-/// The filter behind every route scoped to one book's reviews. Its own `PathParams`, via
-/// the blanket `From<T> for T`.
+/// The filter behind every route scoped to one book's reviews. Its own `FilterParams`, via
+/// the blanket `From<T> for T`. `book_id` always comes from the path: every route mounting it
+/// names `{book_id}`, so a `?book_id=` in the query is a duplicate key and a `400`.
 #[derive(serde::Deserialize)]
 #[serde(crate = "axum_helpers::serde")]
 pub struct ReviewFilter {
@@ -170,39 +171,39 @@ pub struct ReviewFilter {
 /// derived `DeleteRoute` above answers `200` with `0` or `1`. A `ReturnType` of `()` would
 /// make either one a `204` instead.
 #[async_trait]
-impl DeleteRecordsWhere<ReviewFilter> for Review {
+impl DeleteRecordsFiltered<ReviewFilter> for Review {
     type ReturnType = u64;
 
-    async fn delete_records_where(
+    async fn delete_records_filtered(
         pool: &Pool<Sqlite>,
-        where_params: ReviewFilter,
+        filter_params: ReviewFilter,
     ) -> Result<u64, sqlx::Error> {
         sqlx::query("DELETE FROM review WHERE book_id = ?")
-            .bind(where_params.book_id)
+            .bind(filter_params.book_id)
             .execute(pool)
             .await
             .map(|result| result.rows_affected())
     }
 }
 
-impl DeleteRecordsWhereRoute<ReviewFilter> for Review {
-    type PathParams = ReviewFilter;
+impl DeleteRecordsFilteredRoute<ReviewFilter> for Review {
+    type FilterParams = ReviewFilter;
 }
 
 /// Filtered pagination: the filter narrows what is counted as well as what is returned.
 /// Everything `ListRecordsPaginated` documents applies — the opt-in total especially.
 #[async_trait]
-impl ListRecordsWherePaginated<ReviewFilter, OffsetParams> for Review {
-    async fn list_records_where_paginated(
+impl ListRecordsFilteredPaginated<ReviewFilter, OffsetParams> for Review {
+    async fn list_records_filtered_paginated(
         pool: &Pool<Sqlite>,
-        where_params: ReviewFilter,
+        filter_params: ReviewFilter,
         params: OffsetParams,
     ) -> Result<Page<Self, OffsetPagination>, sqlx::Error> {
         let rows = sqlx::query_as::<_, ReviewRow>(
             "SELECT book_id, reviewer, rating, comment FROM review \
              WHERE book_id = ? ORDER BY reviewer LIMIT ? OFFSET ?",
         )
-        .bind(where_params.book_id)
+        .bind(filter_params.book_id)
         .bind(i64::from(params.limit))
         .bind(i64::from(params.offset))
         .fetch_all(pool)
@@ -211,7 +212,7 @@ impl ListRecordsWherePaginated<ReviewFilter, OffsetParams> for Review {
         let total = if params.include_total {
             let (count,) =
                 sqlx::query_as::<_, (i64,)>("SELECT count(*) FROM review WHERE book_id = ?")
-                    .bind(where_params.book_id)
+                    .bind(filter_params.book_id)
                     .fetch_one(pool)
                     .await?;
             Some(count as u32)
@@ -230,8 +231,8 @@ impl ListRecordsWherePaginated<ReviewFilter, OffsetParams> for Review {
     }
 }
 
-impl ListRecordsWherePaginatedRoute<ReviewFilter, DefaultOffsetParamsQuery> for Review {
-    type PathParams = ReviewFilter;
+impl ListRecordsFilteredPaginatedRoute<ReviewFilter, DefaultOffsetParamsQuery> for Review {
+    type FilterParams = ReviewFilter;
 }
 
 pub fn routes() -> Router<Pool<Sqlite>> {
@@ -239,14 +240,16 @@ pub fn routes() -> Router<Pool<Sqlite>> {
         .route("/reviews", post(Review::create_route))
         .route(
             "/books/{book_id}/reviews/page",
-            get(<Review as ListRecordsWherePaginatedRoute<
+            get(<Review as ListRecordsFilteredPaginatedRoute<
                 ReviewFilter,
                 DefaultOffsetParamsQuery,
-            >>::list_records_where_paginated_route),
+            >>::list_records_filtered_paginated_route),
         )
         .route(
             "/books/{book_id}/reviews",
-            delete(<Review as DeleteRecordsWhereRoute<ReviewFilter>>::delete_records_where_route),
+            delete(
+                <Review as DeleteRecordsFilteredRoute<ReviewFilter>>::delete_records_filtered_route,
+            ),
         )
         // The segments are *named* after `ReviewPrimaryKey`'s fields. That is the whole
         // reason the generated key is a struct: rename either segment and this stops

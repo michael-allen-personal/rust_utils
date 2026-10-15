@@ -14,6 +14,14 @@ error_set! {
         /// A query string axum's `Query` extractor could not deserialize — an unparseable
         /// `?limit=abc`, or a cursor type whose `Deserialize` rejected what it was handed.
         InvalidQueryParams(axum::extract::rejection::QueryRejection),
+        /// A [`PathAndQuery`](crate::PathAndQuery) the merged path segments and query string
+        /// could not fill: a missing or unparseable field, or a key supplied by both the path
+        /// and the query.
+        InvalidFilterParams(serde_urlencoded::de::Error),
+        /// The path segments [`PathAndQuery`](crate::PathAndQuery) reads could not be had:
+        /// a segment that is not valid UTF-8 once percent-decoded, or the extractor used
+        /// somewhere no router matched a route.
+        InvalidPathParams(axum::extract::rejection::RawPathParamsRejection),
     } || IOError || ValidationError
     /// The server's own I/O failing, as opposed to anything the client got wrong. Both
     /// variants are therefore a `500`, and a variant that could be the client's fault
@@ -31,10 +39,10 @@ error_set! {
     /// serving it. A subset rather than inline variants so a validation function can
     /// return only what it can actually produce and widen into [`ApiError`] with `?`.
     ///
-    /// `PartialEq` is derivable here and not on `ApiError`, whose `sqlx`, `serde_json` and
-    /// `QueryRejection` sources are not comparable; it is what lets a validation result be
-    /// asserted with `assert_eq!` rather than `matches!`. Keeping it derivable is the
-    /// constraint on what may join this set.
+    /// `PartialEq` is derivable here and not on `ApiError`, whose `sqlx`, `serde_json`,
+    /// `serde_urlencoded` and rejection sources are not comparable; it is what lets a
+    /// validation result be asserted with `assert_eq!` rather than `matches!`. Keeping it
+    /// derivable is the constraint on what may join this set.
     #[derive(PartialEq, Eq)]
     ValidationError := {
         #[display("`limit` must be between 1 and {max}, got {requested}")]
@@ -75,8 +83,15 @@ impl From<ApiError> for ApiErrorResponse {
     fn from(value: ApiError) -> Self {
         match value {
             ApiError::NotFoundError => ApiErrorResponse::NotFound,
-            ApiError::InvalidPaginationLimit { .. } | ApiError::InvalidQueryParams(_) => {
+            ApiError::InvalidPaginationLimit { .. }
+            | ApiError::InvalidQueryParams(_)
+            | ApiError::InvalidFilterParams(_) => {
                 ApiErrorResponse::BadRequestWithMessage(value.to_string())
+            }
+            // The rejection knows its own status: `400` for a bad segment, `500` for an
+            // extractor no route matched, which is a server bug rather than a bad request.
+            ApiError::InvalidPathParams(rejection) => {
+                ApiErrorResponse::FlexibleError(rejection.status(), rejection.body_text())
             }
             ApiError::Serde(_) | ApiError::Sql(_) => {
                 ApiErrorResponse::InternalServerErrorWithMessage(value.to_string())

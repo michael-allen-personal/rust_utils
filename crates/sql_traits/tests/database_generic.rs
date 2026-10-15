@@ -10,9 +10,9 @@
 use sql_traits::async_trait::async_trait;
 use sql_traits::sqlx::{self, Pool, Sqlite};
 use sql_traits::{
-    BulkInsertRecords, CursorPagination, CursorParams, DeleteRecord, DeleteRecordsWhere,
-    GetLatestRecord, GetRecord, GetRecordWhere, HasDatabase, HasPrimaryKey, InsertRecord,
-    ListRecords, ListRecordsPaginated, ListRecordsWhere, ListRecordsWherePaginated,
+    BulkInsertRecords, CursorPagination, CursorParams, DeleteRecord, DeleteRecordsFiltered,
+    GetLatestRecord, GetRecord, GetRecordFiltered, HasDatabase, HasPrimaryKey, InsertRecord,
+    ListRecords, ListRecordsFiltered, ListRecordsFilteredPaginated, ListRecordsPaginated,
     OffsetPagination, OffsetParams, Page, ReplaceRecord, UpdateRecord,
 };
 
@@ -24,7 +24,7 @@ struct Widget {
     name: String,
 }
 
-/// A minimal filter for the `*Where` traits, which this file otherwise has no equivalent
+/// A minimal filter for the `*Filtered` traits, which this file otherwise has no equivalent
 /// for. Its field is never read — these are compile assertions, not behaviour tests.
 struct WidgetFilter {
     name: String,
@@ -78,20 +78,20 @@ impl DeleteRecord for Widget {
 }
 
 #[async_trait]
-impl GetRecordWhere<WidgetFilter> for Widget {
-    async fn get_record_where(
+impl GetRecordFiltered<WidgetFilter> for Widget {
+    async fn get_record_filtered(
         _pool: &Pool<Sqlite>,
-        _where_params: WidgetFilter,
+        _filter_params: WidgetFilter,
     ) -> Result<Option<Self>, sqlx::Error> {
         Ok(None)
     }
 }
 
 #[async_trait]
-impl ListRecordsWhere<WidgetFilter> for Widget {
-    async fn list_records_where(
+impl ListRecordsFiltered<WidgetFilter> for Widget {
+    async fn list_records_filtered(
         _pool: &Pool<Sqlite>,
-        _where_params: WidgetFilter,
+        _filter_params: WidgetFilter,
     ) -> Result<Vec<Self>, sqlx::Error> {
         Ok(Vec::new())
     }
@@ -129,11 +129,11 @@ impl UpdateRecord for Widget {
 }
 
 #[async_trait]
-impl DeleteRecordsWhere<WidgetFilter> for Widget {
+impl DeleteRecordsFiltered<WidgetFilter> for Widget {
     type ReturnType = ();
-    async fn delete_records_where(
+    async fn delete_records_filtered(
         _pool: &Pool<Sqlite>,
-        _where_params: WidgetFilter,
+        _filter_params: WidgetFilter,
     ) -> Result<(), sqlx::Error> {
         Ok(())
     }
@@ -160,10 +160,10 @@ impl ListRecordsPaginated<OffsetParams> for Widget {
 /// mode twice. The cursor is `i64`, a row id, which is the case that "costs nothing" per
 /// the crate's own docs on [`sql_traits::CursorPagination`].
 #[async_trait]
-impl ListRecordsWherePaginated<WidgetFilter, CursorParams<i64>> for Widget {
-    async fn list_records_where_paginated(
+impl ListRecordsFilteredPaginated<WidgetFilter, CursorParams<i64>> for Widget {
+    async fn list_records_filtered_paginated(
         _pool: &Pool<Sqlite>,
-        _where_params: WidgetFilter,
+        _filter_params: WidgetFilter,
         params: CursorParams<i64>,
     ) -> Result<Page<Self, CursorPagination<i64>>, sqlx::Error> {
         Ok(Page {
