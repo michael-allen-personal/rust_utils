@@ -121,6 +121,7 @@ dependencies = [
  "error_set",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sql_traits",
  "sqlx",
  "tokio",

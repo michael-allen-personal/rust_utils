@@ -2,13 +2,13 @@
 //!
 //! Implementing a route trait and *using* it are separate checks. A type can satisfy a
 //! route trait's bounds and still be rejected by `Router::route`, because that is where
-//! axum's `Handler` requirements are enforced: `DeserializeOwned` on whatever `Path`
-//! extracts, `IntoResponse` on the return, `Send + 'static` throughout. `v0.7.0` tightened
+//! axum's `Handler` requirements are enforced: `DeserializeOwned` on whatever `Path` or
+//! `PathAndQuery` extracts, `IntoResponse` on the return, `Send + 'static` throughout. `v0.7.0` tightened
 //! several traits precisely because a bad impl compiled and only failed at the mount site
 //! with an opaque `Handler` error, so mounting is the check that matches the failure mode.
 //!
 //! This also covers the `*Where` family (`GetRecordWhereRoute`, `ListRecordsWhereRoute`,
-//! `DeleteRecordsWhereRoute`), which the derive macros cannot emit — their `PathParams`
+//! `DeleteRecordsWhereRoute`), which the derive macros cannot emit — their `WhereParams`
 //! associated type has to be chosen by the implementor — and which therefore has no
 //! coverage from `derive_macros.rs`.
 //!
@@ -49,8 +49,9 @@ struct Gadget {
     owner_id: i64,
 }
 
-/// The filter the `*Where` routes extract from the URL path. `Into<GadgetFilter>` for
-/// itself comes from the blanket `From<T> for T`, so it can serve as its own `PathParams`.
+/// The filter the `*Where` routes extract from the URL path and query string.
+/// `Into<GadgetFilter>` for itself comes from the blanket `From<T> for T`, so it can serve as
+/// its own `WhereParams`.
 #[derive(axum_helpers::serde::Deserialize)]
 #[serde(crate = "axum_helpers::serde")]
 struct GadgetFilter {
@@ -247,15 +248,15 @@ impl<'de> CreateRoute<'de> for Gadget {}
 impl<'de> BulkCreateRoute<'de> for Gadget {}
 
 impl GetRecordWhereRoute<GadgetFilter> for Gadget {
-    type PathParams = GadgetFilter;
+    type WhereParams = GadgetFilter;
 }
 
 impl ListRecordsWhereRoute<GadgetFilter> for Gadget {
-    type PathParams = GadgetFilter;
+    type WhereParams = GadgetFilter;
 }
 
 impl DeleteRecordsWhereRoute<GadgetFilter> for Gadget {
-    type PathParams = GadgetFilter;
+    type WhereParams = GadgetFilter;
 }
 
 // --- The paginated list family ---------------------------------------------------------
@@ -339,7 +340,7 @@ impl
 impl ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::DefaultOffsetParamsQuery>
     for Gadget
 {
-    type PathParams = GadgetFilter;
+    type WhereParams = GadgetFilter;
 }
 
 // The fourth combination: the filtered trait in cursor mode. Both route traits in both modes are
@@ -374,7 +375,7 @@ impl
 impl ListRecordsWherePaginatedRoute<GadgetFilter, axum_helpers::DefaultCursorParamsQuery<i64>>
     for Gadget
 {
-    type PathParams = GadgetFilter;
+    type WhereParams = GadgetFilter;
 }
 
 /// Every handler mounted on one router. If any of them stops satisfying axum's `Handler`
@@ -483,7 +484,7 @@ impl ListRecordsWhere<SprocketFilter> for Sprocket {
 impl GetRecordRoute for Sprocket {}
 impl ListRecordsRoute for Sprocket {}
 impl ListRecordsWhereRoute<SprocketFilter> for Sprocket {
-    type PathParams = SprocketFilter;
+    type WhereParams = SprocketFilter;
 }
 
 /// Mounting is the check that matches the failure mode: a handler can satisfy its trait

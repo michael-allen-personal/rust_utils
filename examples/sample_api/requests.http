@@ -120,9 +120,31 @@ Content-Type: application/json
 # @name authors_books
 GET {{host}}/authors/1/books
 
+### The same filter, narrowed from the query string: BookFilter takes author_id from the path
+# and genre from the query, through PathAndQuery. "SciFi" is a Genre alias — books 2, 3 and 5.
+# @name authors_books_scifi
+GET {{host}}/authors/1/books?genre=SciFi
+
+### Both optional filters at once — books 3 and 5 (1974 and 1971; book 2 is 1969).
+# @name authors_books_scifi_after_1970
+GET {{host}}/authors/1/books?genre=SciFi&published_after=1970
+
+### author_id is already bound by the path, so repeating it in the query is a duplicate field
+# and a 400 — the query can never redirect a request to another author's books.
+# @name authors_books_duplicate_key
+GET {{host}}/authors/1/books?author_id=2
+
+### An unparseable filter value — 400 in the crate's {"message": ...} shape.
+# @name authors_books_bad_year
+GET {{host}}/authors/1/books?published_after=abc
+
 ### The first (lowest-id) of author 1's books — book 1, "A Wizard of Earthsea".
 # @name authors_books_first
 GET {{host}}/authors/1/books/first
+
+### The same route takes the same query filters — book 2, "The Left Hand of Darkness".
+# @name authors_books_first_scifi
+GET {{host}}/authors/1/books/first?genre=SciFi
 
 ### Deletes the author created above (id 4), not a seeded one, so nothing later in this file
 # breaks. DeleteRoute's default response: 200 with the affected-row count. Response body: 1.

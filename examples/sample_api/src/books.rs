@@ -311,16 +311,44 @@ impl DeleteRoute for Book {
 
 // --- the *Where family ------------------------------------------------------------------
 
-/// The filter behind `/authors/{author_id}/books`. It serves as its own `PathParams`
-/// through the blanket `From<T> for T`, which is why `type PathParams = BookFilter` below
-/// type-checks with no conversion written.
+/// The filter behind `/authors/{author_id}/books`: `author_id` from the path, `genre` and
+/// `published_after` from the query string, all read into this one type by
+/// [`axum_helpers::PathAndQuery`]. Which source fills which field is decided by the mount
+/// below, not by anything here — `author_id` comes from the path only because the route names
+/// `{author_id}`, which also makes a `?author_id=` in the query a duplicate key and a `400`.
 ///
-/// The `*Where` traits have no derive: `PathParams` has to be chosen by the implementor and
+/// It serves as its own `WhereParams` through the blanket `From<T> for T`, which is why
+/// `type WhereParams = BookFilter` below type-checks with no conversion written. `genre` takes
+/// every alias `Genre` does (`?genre=SciFi`), since its `try_from = "String"` is what a query
+/// value goes through too.
+///
+/// The `*Where` traits have no derive: `WhereParams` has to be chosen by the implementor and
 /// cannot be inferred from the record, which is exactly why these four impls are written out.
 #[derive(serde::Deserialize)]
 #[serde(crate = "axum_helpers::serde")]
 pub struct BookFilter {
     pub author_id: i64,
+    pub genre: Option<Genre>,
+    pub published_after: Option<i32>,
+}
+
+/// The `SELECT ... WHERE` both `BookFilter` impls share, with one clause per field that is
+/// present. The caller appends its own `ORDER BY` and `LIMIT`. A book with no
+/// `published_year` never matches `published_after`, since `NULL > ?` is not true.
+fn filtered_books(where_params: BookFilter) -> QueryBuilder<Sqlite> {
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        "SELECT id, author_id, title, genre, published_year FROM book WHERE author_id = ",
+    );
+    builder.push_bind(where_params.author_id);
+    if let Some(genre) = where_params.genre {
+        builder.push(" AND genre = ").push_bind(genre.as_str());
+    }
+    if let Some(published_after) = where_params.published_after {
+        builder
+            .push(" AND published_year > ")
+            .push_bind(published_after);
+    }
+    builder
 }
 
 #[async_trait]
@@ -329,19 +357,15 @@ impl ListRecordsWhere<BookFilter> for Book {
         pool: &Pool<Sqlite>,
         where_params: BookFilter,
     ) -> Result<Vec<Self>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, BookRow>(
-            "SELECT id, author_id, title, genre, published_year FROM book \
-             WHERE author_id = ? ORDER BY id",
-        )
-        .bind(where_params.author_id)
-        .fetch_all(pool)
-        .await?;
+        let mut builder = filtered_books(where_params);
+        builder.push(" ORDER BY id");
+        let rows = builder.build_query_as::<BookRow>().fetch_all(pool).await?;
         books_from_rows(rows)
     }
 }
 
 impl ListRecordsWhereRoute<BookFilter> for Book {
-    type PathParams = BookFilter;
+    type WhereParams = BookFilter;
 }
 
 #[async_trait]
@@ -350,19 +374,18 @@ impl GetRecordWhere<BookFilter> for Book {
         pool: &Pool<Sqlite>,
         where_params: BookFilter,
     ) -> Result<Option<Self>, sqlx::Error> {
-        let row = sqlx::query_as::<_, BookRow>(
-            "SELECT id, author_id, title, genre, published_year FROM book \
-             WHERE author_id = ? ORDER BY id LIMIT 1",
-        )
-        .bind(where_params.author_id)
-        .fetch_optional(pool)
-        .await?;
+        let mut builder = filtered_books(where_params);
+        builder.push(" ORDER BY id LIMIT 1");
+        let row = builder
+            .build_query_as::<BookRow>()
+            .fetch_optional(pool)
+            .await?;
         row.map(book_from_row).transpose()
     }
 }
 
 impl GetRecordWhereRoute<BookFilter> for Book {
-    type PathParams = BookFilter;
+    type WhereParams = BookFilter;
 }
 
 // --- pagination, both modes -------------------------------------------------------------

@@ -157,8 +157,9 @@ impl DeleteRecord for Review {
     }
 }
 
-/// The filter behind every route scoped to one book's reviews. Its own `PathParams`, via
-/// the blanket `From<T> for T`.
+/// The filter behind every route scoped to one book's reviews. Its own `WhereParams`, via
+/// the blanket `From<T> for T`. `book_id` always comes from the path: every route mounting it
+/// names `{book_id}`, so a `?book_id=` in the query is a duplicate key and a `400`.
 #[derive(serde::Deserialize)]
 #[serde(crate = "axum_helpers::serde")]
 pub struct ReviewFilter {
@@ -186,7 +187,7 @@ impl DeleteRecordsWhere<ReviewFilter> for Review {
 }
 
 impl DeleteRecordsWhereRoute<ReviewFilter> for Review {
-    type PathParams = ReviewFilter;
+    type WhereParams = ReviewFilter;
 }
 
 /// Filtered pagination: the filter narrows what is counted as well as what is returned.
@@ -231,7 +232,7 @@ impl ListRecordsWherePaginated<ReviewFilter, OffsetParams> for Review {
 }
 
 impl ListRecordsWherePaginatedRoute<ReviewFilter, DefaultOffsetParamsQuery> for Review {
-    type PathParams = ReviewFilter;
+    type WhereParams = ReviewFilter;
 }
 
 pub fn routes() -> Router<Pool<Sqlite>> {

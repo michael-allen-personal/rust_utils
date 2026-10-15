@@ -70,6 +70,44 @@
   Clients that parsed the old `null` body, or that treated a delete's `204` as the only
   success, need checking along with the server.
 
+- **Breaking.** The `*Where` route traits — `GetRecordWhereRoute`, `ListRecordsWhereRoute`,
+  `ListRecordsWherePaginatedRoute` and `DeleteRecordsWhereRoute` — now read their filter from
+  the URL path *and* the query string, and their associated type is renamed from `PathParams` to
+  `WhereParams` to say so. The path segments and the query string are merged into one set of
+  keys and deserialized once, through the new `PathAndQuery` extractor, so one filter type can
+  take `book_id` from `/books/{book_id}/reviews` and `min_rating` from `?min_rating=4`, and a
+  route with no segments at all (`/books?genre=Fiction`) can be filtered purely from the query.
+  Which source fills a field is decided by the route a handler is mounted on, not by the type.
+
+  The reason is issue #23: filtering a `GET` from the query string is the common case, and the
+  family could only filter on what the path carried. No `sql_traits` change was needed — the
+  SQL traits already took an arbitrary filter `T` without knowing where it came from — so the
+  whole change is in where the route handler fills `T` from. Separate `PathParams` and
+  `QueryParams` types were considered and rejected: every impl would have named both, usually
+  one as `()`, and nearly every filter would have needed a hand-written
+  `From<(PathParams, QueryParams)>`. Merged, the common case stays
+  `type WhereParams = Filter;` with no conversion written.
+
+  A key supplied by both the path and the query is a `400` ("duplicate field"), never an
+  override, so a query cannot redirect a request away from the record its path addresses. A
+  filter that cannot be filled is a `400` in this crate's `{"message": …}` shape, through the
+  new `ApiError::InvalidWhereParams` (or `ApiError::InvalidPathParams`, for a path segment that
+  is not valid UTF-8).
+
+  To migrate:
+
+  - Rename `type PathParams = …;` to `type WhereParams = …;` in every `*WhereRoute` impl.
+  - A `WhereParams` that was a bare scalar or a tuple (`type PathParams = i64;`) must become a
+    struct with named fields: there are no names to merge a positional value on. Its fields are
+    named after the route's segments, as a composite primary key's already are.
+  - Code that calls a `*Where` handler directly, rather than mounting it, passes
+    `PathAndQuery(filter)` where it passed `Path(filter)`.
+  - Behaviour changes silently in two places. A query key matching a filter field used to be
+    ignored and now fills it — or is a `400` if the path already bound it. And a filter marked
+    `#[serde(deny_unknown_fields)]` now sees the whole query string, so on a paginated route it
+    rejects `limit`, `offset` and `cursor`; drop the attribute from a filter that shares a query
+    string with anything else. A `match` over `ApiError` gains two variants.
+
 ### Added
 
 - `generic_helpers` crate, moved here from the `data-monorepo` repo (where it was
@@ -268,6 +306,15 @@
   workspace build rather than surfacing in a consumer's repo.
 
   Additive: no existing crate changed, and consumers need do nothing.
+
+- `axum_helpers::PathAndQuery<T>`: an axum extractor filling one `T` from the route's path
+  segments and the query string together, the extractor every `*WhereRoute` now reads its
+  filter through. It is public so a hand-written handler can read a filter exactly the way the
+  route traits do, with the same duplicate-key `400` and the same error shape — it rejects with
+  `ApiError`. The path segments are re-encoded and parsed alongside the raw query by
+  `serde_urlencoded`, the parser behind axum's own `Query`, so a field parses identically under
+  either extractor. `serde_urlencoded` is re-exported as `axum_helpers::serde_urlencoded`, since
+  its error type is the source of `ApiError::InvalidWhereParams`.
 
 ### Changed
 

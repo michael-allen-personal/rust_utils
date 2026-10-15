@@ -65,7 +65,11 @@ deriving `sql_traits::Record` actually exercise whether the dependency has to be
 - `authors.rs` — the batteries-included path. One `#[derive(axum_helpers::BasicCrudRoutes)]`
   implements seven route traits at once; `GetLatestRoute` is derived separately because the
   bundle deliberately excludes it.
-- `books.rs` — the a-la-carte path, plus pagination and the `*Where` family. `DeleteRoute`
+- `books.rs` — the a-la-carte path, plus pagination and the `*Where` family. `BookFilter`
+  is the one filter drawing on both sources `PathAndQuery` merges: `author_id` from the path
+  of `/authors/{author_id}/books`, and optional `genre`/`published_after` from the query
+  string, so `requests.http` can show a filter narrowed, a key duplicated (`400`) and a value
+  that does not parse (`400`) against one route. `DeleteRoute`
   is the one route written out rather than derived, to override `delete_response` (`404`
   for a key matching no row, `204` otherwise); `authors.rs` and `reviews.rs` take the
   default, `200` with the affected-row count.
